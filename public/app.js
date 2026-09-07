@@ -1,108 +1,66 @@
 let me=null, area='class', groups=[], currentGroup=null, cooldownTimer=null;
+let adminData=null, adminGroupsData=[], adminRankings=[], adminWeekly=null, adminPeriods=[], adminSection='data';
+let adminReportArea='class', adminReportGroups=[], adminReportGroup=null;
 const $=x=>document.getElementById(x);
-async function api(url,opt={}){
- const r=await fetch(url,{headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});
- const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error||'שגיאה'); return d;
-}
-async function boot(){
- try{me=await api('/api/me'); showApp();}catch{}
-}
-async function login(){
- try{me=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})});showApp()}
- catch(e){$('loginMsg').textContent=e.message;$('loginMsg').classList.remove('hidden')}
-}
+async function api(url,opt={}){const r=await fetch(url,{headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'שגיאה');return d}
+async function boot(){try{me=await api('/api/me');showApp()}catch{}}
+async function login(){try{me=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})});showApp()}catch(e){$('loginMsg').textContent=e.message;$('loginMsg').classList.remove('hidden')}}
 async function logout(){await api('/api/auth/logout',{method:'POST'});location.reload()}
-function showApp(){
- $('login').classList.add('hidden');$('app').classList.remove('hidden');$('who').textContent=me.name;
- $('role').textContent=me.role==='admin'?'מנהל':me.role==='study'?'צוות לימודים':'צוות פנימייה';
- if(me.role==='admin') $('adminTab').classList.remove('hidden');
- if(me.role==='study'){area='class';$('dormTab').classList.add('hidden')}
- if(me.role==='dorm'){area='dorm';$('classTab').classList.add('hidden')}
- openArea(area);
-}
-async function openArea(a){
- area=a;$('admin').classList.add('hidden');$('reporting').classList.remove('hidden');
- $('classTab').classList.toggle('active',a==='class');$('dormTab').classList.toggle('active',a==='dorm');
- groups=await api('/api/groups?type='+a); currentGroup=groups[0]?.id||null; renderGroupPicker(); if(currentGroup) loadStudents(); else $('reporting').innerHTML+='<div class="panel">אין קבוצות שהוקצו למשתמש זה.</div>';
-}
-function renderGroupPicker(){
- $('reporting').innerHTML=`<div class="panel"><h3>${area==='class'?'בחר כיתה':'בחר קבוצת פנימייה'}</h3><div class="grid">${groups.map(g=>`<button class="btn ${g.id===currentGroup?'active':''}" onclick="selectGroup(${g.id})">${esc(g.name)}</button>`).join('')}</div></div><div id="students"></div>`;
-}
+async function loadLeader(){try{const l=await api('/api/leaderboard');const el=$('leaderCard');if(!el)return;el.innerHTML=l?`<div class="leader-inner ${l.goal_reached?'goal-reached':''}"><span class="leader-crown">🏆</span><div class="grow"><div class="small">הכיתה המובילה כרגע</div><b>${esc(l.name)}</b><div class="goal-mini"><span style="width:${Math.min(100,Math.max(0,(l.score/l.goal_target)*100))}%"></span></div><div class="small">יעד: ${l.goal_target} נק׳</div></div><div class="leader-score">${l.score} נק׳${l.goal_reached?'<div class="goal-win">🎉 היעד הושג!</div>':''}</div></div>`:`<div class="small">עדיין אין נתוני דירוג כיתות.</div>`}catch{}}
+function showApp(){$('login').classList.add('hidden');$('app').classList.remove('hidden');$('who').textContent=me.name;$('role').textContent=me.role==='admin'?'מנהל':me.role==='study'?'צוות לימודים':'צוות פנימייה';if(me.role==='admin')$('adminTab').classList.remove('hidden');if(me.role==='study'){area='class';$('dormTab').classList.add('hidden')}if(me.role==='dorm'){area='dorm';$('classTab').classList.add('hidden')}loadLeader();openArea(area)}
+async function openArea(a){area=a;$('admin').classList.add('hidden');$('reporting').classList.remove('hidden');$('classTab').classList.toggle('active',a==='class');$('dormTab').classList.toggle('active',a==='dorm');$('adminTab').classList.remove('active');groups=await api('/api/groups?type='+a);currentGroup=groups[0]?.id||null;renderGroupPicker();if(currentGroup)loadStudents();else $('reporting').innerHTML+='<div class="panel">אין קבוצות שהוקצו למשתמש זה.</div>'}
+function renderGroupPicker(){$('reporting').innerHTML=`<div class="panel"><h3>${area==='class'?'בחר כיתה':'בחר קבוצת פנימייה'}</h3><div class="grid">${groups.map(g=>`<button class="btn ${g.id===currentGroup?'active':''}" onclick="selectGroup(${g.id})">${esc(g.name)}</button>`).join('')}</div></div><div id="students"></div>`}
 async function selectGroup(id){currentGroup=id;renderGroupPicker();await loadStudents()}
-async function loadStudents(){
- const rows=await api('/api/groups/'+currentGroup+'/students');
- $('students').innerHTML=`<div class="panel"><h2>${esc(groups.find(g=>g.id===currentGroup)?.name||'')}</h2><div class="small" style="margin-bottom:8px">כל 20 דיווחי פלוס מזכים אוטומטית בבונוס של 5 נקודות.</div>${rows.map(s=>studentCard(s)).join('')}</div>`;
- startCooldownClock();
-}
-function studentCard(s){return `<div class="student"><div><b>${esc(s.name)}</b><div class="small">ניקוד: ${s.score}${s.bonus?` · כולל בונוס ${s.bonus}+`:''}</div></div><div class="actions"><button id="minus_${s.id}" class="minus" data-until="${s.minus_locked_until||''}" ${s.minus_locked?'disabled':''} onclick="report(${s.id},'minus')">−</button><span class="score">${s.score}</span><button id="plus_${s.id}" class="plus" data-until="${s.plus_locked_until||''}" ${s.plus_locked?'disabled':''} onclick="report(${s.id},'plus')">+</button></div></div>`}
-function startCooldownClock(){
- if(cooldownTimer) clearInterval(cooldownTimer);
- const tick=()=>document.querySelectorAll('button[data-until]').forEach(btn=>{
-   const until=btn.dataset.until; if(!until){btn.title='';return}
-   const ms=new Date(until).getTime()-Date.now();
-   if(ms<=0){btn.disabled=false;btn.dataset.until='';btn.title='';return}
-   const sec=Math.ceil(ms/1000),m=Math.floor(sec/60),r=String(sec%60).padStart(2,'0');
-   btn.disabled=true;btn.title=`אפשר שוב בעוד ${m}:${r}`;
- });
- tick(); cooldownTimer=setInterval(tick,1000);
-}
-async function report(studentId,type){try{await api('/api/reports',{method:'POST',body:JSON.stringify({studentId,type,area})});await loadStudents()}catch(e){alert(e.message);await loadStudents()}}
-async function openAdmin(){
- $('reporting').classList.add('hidden');$('admin').classList.remove('hidden');
- const [d,gs,rankings]=await Promise.all([api('/api/admin/dashboard'),api('/api/admin/groups'),api('/api/admin/class-rankings')]);
- $('admin').innerHTML=`<div class="panel"><h2>לוח מנהל</h2><div class="statgrid"><div class="stat">תלמידים<b>${d.students.length}</b></div><div class="stat">דיווחים<b>${d.summary.reports}</b></div><div class="stat">פלוס<b>${d.summary.plus}</b></div><div class="stat">מינוס<b>${d.summary.minus}</b></div></div></div>
- ${adminClassRankings(rankings)}${adminStudents(d.students)}${adminGroups(gs,d.students)}${adminUsers(d.users,gs)}${adminLogs(d.reports)}`;
-}
-function adminClassRankings(classes){return `<div class="panel"><h2>מצב כיתות וניקוד</h2><div class="small" style="margin-bottom:10px">הדירוג בכל כיתה מוצג מהניקוד הגבוה לנמוך. כל 20 דיווחי פלוס מעניקים בונוס אוטומטי של 5 נקודות.</div>${classes.map(c=>`<div class="ranking-class"><div class="row ranking-head"><b class="grow">${esc(c.group_name)}</b><span>ניקוד כיתתי: <b>${c.class_score}</b></span></div>${(c.students||[]).map((s,i)=>`<div class="ranking-row"><span class="rank">${i+1}</span><span class="grow">${esc(s.name)}</span><span class="small">בסיס ${s.base_score}${s.bonus?` + בונוס ${s.bonus}`:''}</span><b>${s.score}</b></div>`).join('')||'<div class="small">אין תלמידים בכיתה</div>'}</div>`).join('')||'<div class="small">אין כיתות מוגדרות</div>'}</div>`}
+async function loadStudents(){const rows=await api('/api/groups/'+currentGroup+'/students');$('students').innerHTML=reportStudentsHtml(rows,groups.find(g=>g.id===currentGroup)?.name||'');startCooldownClock()}
+function reportStudentsHtml(rows,title,prefix=''){return `<div class="panel"><h2>${esc(title)}</h2><div class="small" style="margin-bottom:8px">כל 20 דיווחי פלוס מזכים אוטומטית בבונוס של 5 נקודות.</div>${rows.map(s=>studentCard(s,prefix)).join('')}</div>`}
+function studentCard(s,prefix=''){return `<div class="student"><div><b>${esc(s.name)}</b><div class="small">ניקוד: ${s.score}${s.bonus?` · כולל בונוס ${s.bonus}+`:''}</div></div><div class="actions"><button id="${prefix}minus_${s.id}" class="minus" data-until="${s.minus_locked_until||''}" ${s.minus_locked?'disabled':''} onclick="${prefix?'adminReport':'report'}(${s.id},'minus')">−</button><span class="score">${s.score}</span><button id="${prefix}plus_${s.id}" class="plus" data-until="${s.plus_locked_until||''}" ${s.plus_locked?'disabled':''} onclick="${prefix?'adminReport':'report'}(${s.id},'plus')">+</button></div></div>`}
+function startCooldownClock(){if(cooldownTimer)clearInterval(cooldownTimer);const tick=()=>document.querySelectorAll('button[data-until]').forEach(btn=>{const until=btn.dataset.until;if(!until){btn.title='';return}const ms=new Date(until).getTime()-Date.now();if(ms<=0){btn.disabled=false;btn.dataset.until='';btn.title='';return}const sec=Math.ceil(ms/1000),m=Math.floor(sec/60),r=String(sec%60).padStart(2,'0');btn.disabled=true;btn.title=`אפשר שוב בעוד ${m}:${r}`});tick();cooldownTimer=setInterval(tick,1000)}
+async function report(studentId,type){try{await api('/api/reports',{method:'POST',body:JSON.stringify({studentId,type,area})});await Promise.all([loadStudents(),loadLeader()])}catch(e){alert(e.message);await loadStudents()}}
+
+async function loadAdminAll(){[adminData,adminGroupsData,adminRankings,adminWeekly,adminPeriods]=await Promise.all([api('/api/admin/dashboard'),api('/api/admin/groups'),api('/api/admin/class-rankings'),api('/api/admin/weekly'),api('/api/admin/periods')])}
+async function openAdmin(section='data'){$('reporting').classList.add('hidden');$('admin').classList.remove('hidden');$('classTab').classList.remove('active');$('dormTab').classList.remove('active');$('adminTab').classList.add('active');adminSection=section;await loadAdminAll();renderAdmin()}
+function renderAdmin(){$('admin').innerHTML=`<div class="panel admin-shell"><div class="admin-tabs"><button class="btn ${adminSection==='data'?'active':''}" onclick="switchAdmin('data')">📊 הצגת נתונים</button><button class="btn ${adminSection==='report'?'active':''}" onclick="switchAdmin('report')">➕ דיווח</button><button class="btn ${adminSection==='edit'?'active':''}" onclick="switchAdmin('edit')">⚙️ עריכה</button></div></div><div id="adminContent"></div>`;renderAdminContent()}
+async function switchAdmin(s){adminSection=s;renderAdmin();if(s==='report')await loadAdminReportGroups()}
+function renderAdminContent(){const el=$('adminContent');if(!el)return;if(adminSection==='data')el.innerHTML=adminDataView();if(adminSection==='report')el.innerHTML=adminReportView();if(adminSection==='edit')el.innerHTML=adminEditView()}
+function adminDataView(){const d=adminData;return `<div class="panel"><div class="row"><div class="grow"><h2>לוח נתונים</h2><div class="small">תקופה פעילה: <b>${esc(d.period?.name||'')}</b></div></div><button class="btn" onclick="exportExcel()">⬇️ Excel</button><button class="btn" onclick="printRankings()">🖨️ PDF / הדפסה</button></div><div class="statgrid"><div class="stat">תלמידים<b>${d.students.length}</b></div><div class="stat">דיווחים<b>${d.summary.reports}</b></div><div class="stat">פלוס<b>${d.summary.plus}</b></div><div class="stat">מינוס<b>${d.summary.minus}</b></div></div></div>${weeklyStar(adminWeekly)}${weeklyChart(adminWeekly)}${adminClassRankings(adminRankings)}${adminLogs(d.reports)}`}
+function weeklyStar(w){if(!w?.star)return `<div class="panel"><h2>⭐ תלמיד מצטיין השבוע</h2><div class="small">עדיין אין מספיק נתונים.</div></div>`;return `<div class="panel star-card"><div class="star-icon">⭐</div><div><div class="small">תלמיד מצטיין השבוע</div><h2>${esc(w.star.name)}</h2><div>${esc(w.star.class_name)} · ${w.star.score} נק׳ השבוע</div></div></div>`}
+function weeklyChart(w){if(!w?.classes?.length)return '';const all=w.classes.flatMap(c=>c.points),max=Math.max(1,...all),width=680,height=220,pad=34,plotW=width-pad*2,plotH=height-pad*2;const polylines=w.classes.map((c,ci)=>{const pts=c.points.map((v,i)=>`${pad+(i/(Math.max(1,c.points.length-1)))*plotW},${height-pad-(v/max)*plotH}`).join(' ');return `<polyline class="chart-line line-${ci%6}" points="${pts}" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`}).join('');const labels=w.days.map((d,i)=>`<text x="${pad+(i/(Math.max(1,w.days.length-1)))*plotW}" y="${height-8}" text-anchor="middle" class="chart-label">${esc(d)}</text>`).join('');return `<div class="panel"><h2>📈 התקדמות שבועית לפי כיתה</h2><div class="chart-wrap"><svg viewBox="0 0 ${width} ${height}" role="img"><line x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}" class="axis"/>${polylines}${labels}</svg></div><div class="chart-legend">${w.classes.map((c,i)=>`<span><i class="legend-dot line-bg-${i%6}"></i>${esc(c.name)} <b>${c.points.at(-1)||0}</b></span>`).join('')}</div></div>`}
+function adminClassRankings(classes){return `<div class="panel" id="rankingsPrint"><h2>מצב כיתות וניקוד</h2><div class="small" style="margin-bottom:10px">הדירוג בכל כיתה מוצג מהניקוד הגבוה לנמוך.</div>${classes.map(c=>{const pct=Math.min(100,Math.max(0,(c.class_score/c.goal_target)*100));return `<div class="ranking-class ${c.class_score>=c.goal_target?'goal-hit':''}"><div class="row ranking-head"><b class="grow">${esc(c.group_name)}</b><span>ניקוד כיתתי: <b>${c.class_score}</b> / ${c.goal_target}${c.class_score>=c.goal_target?' 🎉':''}</span></div><div class="goal-bar"><span style="width:${pct}%"></span></div>${(c.students||[]).map((s,i)=>`<div class="ranking-row"><span class="rank">${i+1}</span><span class="grow">${esc(s.name)}</span><span class="small">בסיס ${s.base_score}${s.bonus?` + בונוס ${s.bonus}`:''}</span><b>${s.score}</b></div>`).join('')||'<div class="small">אין תלמידים בכיתה</div>'}</div>`}).join('')||'<div class="small">אין כיתות מוגדרות</div>'}</div>`}
+function adminLogs(reports){return `<div class="panel"><h2>יומן דיווחים אחרונים</h2>${reports.map(r=>`<div class="logrow"><span>${esc(r.student_name)} ${r.report_type==='plus'?'➕':'➖'} <span class="small">על ידי ${esc(r.reporter_name)}</span></span><span class="small">${new Date(r.created_at).toLocaleString('he-IL')}</span></div>`).join('')||'אין דיווחים'}</div>`}
+function exportExcel(){const rows=[['כיתה','מיקום','תלמיד','ניקוד בסיס','בונוס','ניקוד סופי']];for(const c of adminRankings)for(let i=0;i<(c.students||[]).length;i++){const s=c.students[i];rows.push([c.group_name,i+1,s.name,s.base_score,s.bonus,s.score])}const csv='\uFEFF'+rows.map(r=>r.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n');const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`natzor-lashon-${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(a.href)}
+function printRankings(){const html=$('rankingsPrint')?.outerHTML||'';const w=window.open('','_blank');w.document.write(`<html dir="rtl"><head><title>דירוג נצור לשונך</title><style>body{font-family:Arial;padding:24px}.ranking-class{border:1px solid #ccc;padding:14px;margin:12px 0}.row,.ranking-row{display:flex;gap:12px;padding:6px}.grow{flex:1}.small{color:#555}.goal-bar{height:8px;background:#eee}.goal-bar span{display:block;height:100%;background:#333}</style></head><body>${html}<script>window.onload=()=>window.print()<\/script></body></html>`);w.document.close()}
+
+function adminReportView(){return `<div class="panel"><h2>דיווח מנהל</h2><div class="tabs"><button class="btn ${adminReportArea==='class'?'active':''}" onclick="setAdminReportArea('class')">🏫 כיתות</button><button class="btn ${adminReportArea==='dorm'?'active':''}" onclick="setAdminReportArea('dorm')">🏠 פנימייה</button></div></div><div id="adminReportBody"><div class="panel small">טוען קבוצות...</div></div>`}
+async function loadAdminReportGroups(){adminReportGroups=await api('/api/groups?type='+adminReportArea);adminReportGroup=adminReportGroups[0]?.id||null;renderAdminReportPicker();if(adminReportGroup)loadAdminReportStudents()}
+async function setAdminReportArea(a){adminReportArea=a;renderAdminContent();await loadAdminReportGroups()}
+function renderAdminReportPicker(){const el=$('adminReportBody');if(!el)return;el.innerHTML=`<div class="panel"><h3>${adminReportArea==='class'?'בחר כיתה':'בחר קבוצת פנימייה'}</h3><div class="grid">${adminReportGroups.map(g=>`<button class="btn ${g.id===adminReportGroup?'active':''}" onclick="selectAdminReportGroup(${g.id})">${esc(g.name)}</button>`).join('')}</div></div><div id="adminReportStudents"></div>`}
+async function selectAdminReportGroup(id){adminReportGroup=id;renderAdminReportPicker();await loadAdminReportStudents()}
+async function loadAdminReportStudents(){const rows=await api('/api/groups/'+adminReportGroup+'/students');$('adminReportStudents').innerHTML=reportStudentsHtml(rows,adminReportGroups.find(g=>g.id===adminReportGroup)?.name||'','a_');startCooldownClock()}
+async function adminReport(studentId,type){try{await api('/api/reports',{method:'POST',body:JSON.stringify({studentId,type,area:adminReportArea})});await Promise.all([loadAdminReportStudents(),loadLeader()]);await loadAdminAll()}catch(e){alert(e.message);await loadAdminReportStudents()}}
+
+function adminEditView(){return `${adminPeriodsView()}${adminStudents(adminData.students)}${adminGroups(adminGroupsData,adminData.students)}${adminUsers(adminData.users,adminGroupsData)}`}
+function adminPeriodsView(){return `<div class="panel"><h2>🔄 תקופות ניקוד</h2><div class="small">פתיחת תקופה חדשה מאפסת את הניקוד המוצג, אבל שומרת את כל הדיווחים וההיסטוריה מהתקופות הקודמות.</div><div class="row"><input id="newPeriodName" class="input grow" placeholder="למשל: חודש חשוון / מחצית א׳"><button class="btn ok" onclick="startNewPeriod()">פתח תקופה חדשה</button></div><div class="period-list">${adminPeriods.slice(0,8).map(p=>`<div class="row"><span class="grow">${p.active?'🟢':'⚪'} ${esc(p.name)}</span><span class="small">${new Date(p.started_at).toLocaleDateString('he-IL')}</span></div>`).join('')}</div></div>`}
 function adminStudents(students){return `<div class="panel"><h2>תלמידים</h2><div class="row"><input id="newStudent" class="input grow" placeholder="שם תלמיד"><button class="btn ok" onclick="addStudent()">+ הוסף</button></div>${students.map(s=>`<div class="row"><input class="input grow" value="${escAttr(s.name)}" onchange="renameStudent(${s.id},this.value)"><button class="btn danger" onclick="deleteStudent(${s.id})">מחיקה</button></div>`).join('')}</div>`}
-function adminGroups(gs,students){return `<div class="panel"><h2>כיתות וקבוצות</h2><div class="row"><input id="newGroup" class="input grow" placeholder="שם"><select id="newGroupType" style="max-width:180px"><option value="class">כיתה</option><option value="dorm">פנימייה</option></select><button class="btn ok" onclick="addGroup()">+ הוסף</button></div>${gs.map(g=>`<div class="panel" style="background:#f8f9fb"><div class="row"><input class="input grow" value="${escAttr(g.name)}" onchange="renameGroup(${g.id},this.value)"><b>${g.type==='class'?'כיתה':'פנימייה'}</b><button class="btn danger" onclick="deleteGroup(${g.id})">מחיקה</button></div><div class="small">תלמידים בקבוצה</div>${g.members.map(m=>`<div class="row"><span class="grow">${esc(m.name)}</span><button class="btn danger" onclick="removeMember(${g.id},${m.id})">הסר</button></div>`).join('')}<div class="row"><select id="add_${g.id}" class="grow">${students.filter(s=>!g.members.some(m=>m.id===s.id)).map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select><button class="btn ok" onclick="addMember(${g.id})">הוסף תלמיד</button></div></div>`).join('')}</div>`}
-function adminUsers(users,gs){return `<div class="panel"><h2>משתמשי צוות</h2>
-<div class="grid">
-<input id="uName" class="input" placeholder="שם">
-<input id="uEmail" class="input" placeholder="אימייל">
-<input id="uPass" class="input" placeholder="סיסמה (8+)">
-<select id="uRole"><option value="study">צוות לימודים</option><option value="dorm">צוות פנימייה</option><option value="admin">מנהל</option></select>
-</div><button class="btn ok" onclick="addUser()">+ צור משתמש</button>
-${users.map(u=>`<div class="panel" style="background:#f8f9fb">
-<div class="row"><input id="uname_${u.id}" class="input grow" value="${escAttr(u.name)}"><input id="uemail_${u.id}" class="input grow" value="${escAttr(u.email)}"></div>
-<div class="row"><select id="urole_${u.id}" class="grow"><option value="study" ${u.role==='study'?'selected':''}>צוות לימודים</option><option value="dorm" ${u.role==='dorm'?'selected':''}>צוות פנימייה</option><option value="admin" ${u.role==='admin'?'selected':''}>מנהל</option></select>
-<label><input id="uactive_${u.id}" type="checkbox" ${u.active?'checked':''}> פעיל</label>
-<button class="btn ok" onclick="saveUser(${u.id})">שמור משתמש</button>
-<button class="btn danger" onclick="deleteUser(${u.id})">מחיקה</button></div>
-<div class="row"><input id="upass_${u.id}" class="input grow" type="password" placeholder="סיסמה חדשה"><button class="btn" onclick="resetUserPassword(${u.id})">החלף סיסמה</button></div>
-<div class="small" style="margin:8px 0">הרשאות לכיתות / קבוצות:</div>
-<div class="grid">${gs.map(g=>`<label class="panel" style="padding:8px;margin:0"><input type="checkbox" ${Array.isArray(u.group_ids)&&u.group_ids.map(Number).includes(Number(g.id))?'checked':''} onchange="toggleUserGroup(${u.id},${g.id},this.checked)"> ${g.type==='class'?'🏫':'🏠'} ${esc(g.name)}</label>`).join('')}</div>
-</div>`).join('')}</div>`}
-function adminLogs(reports){return `<div class="panel"><h2>יומן דיווחים</h2>${reports.map(r=>`<div class="logrow"><span>${esc(r.student_name)} ${r.report_type==='plus'?'➕':'➖'} <span class="small">על ידי ${esc(r.reporter_name)}</span></span><span class="small">${new Date(r.created_at).toLocaleString('he-IL')}</span></div>`).join('')||'אין דיווחים'}</div>`}
-async function addStudent(){await api('/api/admin/students',{method:'POST',body:JSON.stringify({name:$('newStudent').value})});openAdmin()}
-async function renameStudent(id,name){await api('/api/admin/students/'+id,{method:'PUT',body:JSON.stringify({name})});openAdmin()}
-async function deleteStudent(id){if(confirm('למחוק תלמיד?')){await api('/api/admin/students/'+id,{method:'DELETE'});openAdmin()}}
-async function addGroup(){await api('/api/admin/groups',{method:'POST',body:JSON.stringify({name:$('newGroup').value,type:$('newGroupType').value})});openAdmin()}
-async function renameGroup(id,name){await api('/api/admin/groups/'+id,{method:'PUT',body:JSON.stringify({name})});openAdmin()}
-async function deleteGroup(id){if(confirm('למחוק קבוצה?')){await api('/api/admin/groups/'+id,{method:'DELETE'});openAdmin()}}
-async function addMember(gid){let sid=$('add_'+gid).value;if(sid){await api(`/api/admin/groups/${gid}/students/${sid}`,{method:'POST'});openAdmin()}}
-async function removeMember(gid,sid){await api(`/api/admin/groups/${gid}/students/${sid}`,{method:'DELETE'});openAdmin()}
-async function addUser(){await api('/api/admin/users',{method:'POST',body:JSON.stringify({name:$('uName').value,email:$('uEmail').value,password:$('uPass').value,role:$('uRole').value})});openAdmin()}
+function adminGroups(gs,students){return `<div class="panel"><h2>כיתות וקבוצות + יעדים</h2><div class="row"><input id="newGroup" class="input grow" placeholder="שם"><select id="newGroupType" style="max-width:180px"><option value="class">כיתה</option><option value="dorm">פנימייה</option></select><button class="btn ok" onclick="addGroup()">+ הוסף</button></div>${gs.map(g=>`<div class="panel soft"><div class="row"><input class="input grow" value="${escAttr(g.name)}" onchange="renameGroup(${g.id},this.value)"><b>${g.type==='class'?'כיתה':'פנימייה'}</b><button class="btn danger" onclick="deleteGroup(${g.id})">מחיקה</button></div>${g.type==='class'?`<div class="row goal-editor"><span>🎯 יעד כיתתי</span><input id="goal_${g.id}" class="input" type="number" min="1" value="${g.goal_target||500}"><button class="btn" onclick="saveGoal(${g.id})">שמור יעד</button></div>`:''}<div class="small">תלמידים בקבוצה</div>${g.members.map(m=>`<div class="row"><span class="grow">${esc(m.name)}</span><button class="btn danger" onclick="removeMember(${g.id},${m.id})">הסר</button></div>`).join('')}<div class="row"><select id="add_${g.id}" class="grow">${students.filter(s=>!g.members.some(m=>m.id===s.id)).map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select><button class="btn ok" onclick="addMember(${g.id})">הוסף תלמיד</button></div></div>`).join('')}</div>`}
+function adminUsers(users,gs){return `<div class="panel"><h2>משתמשי צוות ותזכורות</h2><div class="grid"><input id="uName" class="input" placeholder="שם"><input id="uEmail" class="input" placeholder="אימייל"><input id="uPass" class="input" placeholder="סיסמה (8+)"><select id="uRole"><option value="study">צוות לימודים</option><option value="dorm">צוות פנימייה</option><option value="admin">מנהל</option></select></div><button class="btn ok" onclick="addUser()">+ צור משתמש</button>${users.map(u=>`<div class="panel soft"><div class="row"><input id="uname_${u.id}" class="input grow" value="${escAttr(u.name)}"><input id="uemail_${u.id}" class="input grow" value="${escAttr(u.email)}"></div><div class="row"><select id="urole_${u.id}" class="grow"><option value="study" ${u.role==='study'?'selected':''}>צוות לימודים</option><option value="dorm" ${u.role==='dorm'?'selected':''}>צוות פנימייה</option><option value="admin" ${u.role==='admin'?'selected':''}>מנהל</option></select><label><input id="uactive_${u.id}" type="checkbox" ${u.active?'checked':''}> פעיל</label><button class="btn ok" onclick="saveUser(${u.id})">שמור משתמש</button><button class="btn danger" onclick="deleteUser(${u.id})">מחיקה</button></div><div class="reminder-box"><b>📧 תזכורת יומית לדיווח</b><div class="row"><label><input id="urem_${u.id}" type="checkbox" ${u.reminder_enabled?'checked':''}> פעילה</label><input id="utime_${u.id}" class="input time-input" type="time" value="${u.reminder_time?String(u.reminder_time).slice(0,5):'20:00'}"><button class="btn" onclick="saveReminder(${u.id})">שמור תזכורת</button></div><div class="small">השעה היא לפי שעון ישראל.</div></div><div class="row"><input id="upass_${u.id}" class="input grow" type="password" placeholder="סיסמה חדשה"><button class="btn" onclick="resetUserPassword(${u.id})">החלף סיסמה</button></div><div class="small" style="margin:8px 0">הרשאות לכיתות / קבוצות:</div><div class="grid">${gs.map(g=>`<label class="panel group-check"><input type="checkbox" ${Array.isArray(u.group_ids)&&u.group_ids.map(Number).includes(Number(g.id))?'checked':''} onchange="toggleUserGroup(${u.id},${g.id},this.checked)"> ${g.type==='class'?'🏫':'🏠'} ${esc(g.name)}</label>`).join('')}</div></div>`).join('')}</div>`}
 
-async function saveUser(id){
-  await api('/api/admin/users/'+id,{method:'PUT',body:JSON.stringify({name:$('uname_'+id).value,role:$('urole_'+id).value,active:$('uactive_'+id).checked})});
-  await api('/api/admin/users/'+id+'/email',{method:'PUT',body:JSON.stringify({email:$('uemail_'+id).value})});
-  openAdmin();
-}
-async function resetUserPassword(id){
-  const password=$('upass_'+id).value;
-  if(!password) return alert('הזן סיסמה חדשה');
-  await api('/api/admin/users/'+id+'/password',{method:'PUT',body:JSON.stringify({password})});
-  alert('הסיסמה הוחלפה בהצלחה');
-  openAdmin();
-}
-async function deleteUser(id){
-  if(confirm('למחוק את משתמש הצוות?')){await api('/api/admin/users/'+id,{method:'DELETE'});openAdmin()}
-}
-async function toggleUserGroup(uid,gid,checked){
-  await api(`/api/admin/users/${uid}/groups/${gid}`,{method:checked?'POST':'DELETE'});
-}
-
+async function refreshAdminEdit(){await loadAdminAll();renderAdmin()}
+async function startNewPeriod(){const name=$('newPeriodName').value.trim();if(!name)return alert('הזן שם לתקופה');if(!confirm(`לפתוח תקופת ניקוד חדשה בשם "${name}"? הניקוד המוצג יתאפס, אבל ההיסטוריה תישמר.`))return;await api('/api/admin/periods/start',{method:'POST',body:JSON.stringify({name})});await Promise.all([refreshAdminEdit(),loadLeader()]);alert('התקופה החדשה נפתחה')}
+async function saveGoal(id){await api('/api/admin/groups/'+id+'/goal',{method:'PUT',body:JSON.stringify({target:Number($('goal_'+id).value)})});refreshAdminEdit()}
+async function addStudent(){await api('/api/admin/students',{method:'POST',body:JSON.stringify({name:$('newStudent').value})});refreshAdminEdit()}
+async function renameStudent(id,name){await api('/api/admin/students/'+id,{method:'PUT',body:JSON.stringify({name})});refreshAdminEdit()}
+async function deleteStudent(id){if(confirm('למחוק תלמיד?')){await api('/api/admin/students/'+id,{method:'DELETE'});refreshAdminEdit()}}
+async function addGroup(){await api('/api/admin/groups',{method:'POST',body:JSON.stringify({name:$('newGroup').value,type:$('newGroupType').value})});refreshAdminEdit()}
+async function renameGroup(id,name){await api('/api/admin/groups/'+id,{method:'PUT',body:JSON.stringify({name})});refreshAdminEdit()}
+async function deleteGroup(id){if(confirm('למחוק קבוצה?')){await api('/api/admin/groups/'+id,{method:'DELETE'});refreshAdminEdit()}}
+async function addMember(gid){let sid=$('add_'+gid).value;if(sid){await api(`/api/admin/groups/${gid}/students/${sid}`,{method:'POST'});refreshAdminEdit()}}
+async function removeMember(gid,sid){await api(`/api/admin/groups/${gid}/students/${sid}`,{method:'DELETE'});refreshAdminEdit()}
+async function addUser(){await api('/api/admin/users',{method:'POST',body:JSON.stringify({name:$('uName').value,email:$('uEmail').value,password:$('uPass').value,role:$('uRole').value})});refreshAdminEdit()}
+async function saveUser(id){await api('/api/admin/users/'+id,{method:'PUT',body:JSON.stringify({name:$('uname_'+id).value,role:$('urole_'+id).value,active:$('uactive_'+id).checked})});await api('/api/admin/users/'+id+'/email',{method:'PUT',body:JSON.stringify({email:$('uemail_'+id).value})});refreshAdminEdit()}
+async function saveReminder(id){await api('/api/admin/users/'+id+'/reminder',{method:'PUT',body:JSON.stringify({enabled:$('urem_'+id).checked,time:$('utime_'+id).value})});alert('התזכורת נשמרה')}
+async function resetUserPassword(id){const password=$('upass_'+id).value;if(!password)return alert('הזן סיסמה חדשה');await api('/api/admin/users/'+id+'/password',{method:'PUT',body:JSON.stringify({password})});alert('הסיסמה הוחלפה בהצלחה');refreshAdminEdit()}
+async function deleteUser(id){if(confirm('למחוק את משתמש הצוות?')){await api('/api/admin/users/'+id,{method:'DELETE'});refreshAdminEdit()}}
+async function toggleUserGroup(uid,gid,checked){await api(`/api/admin/users/${uid}/groups/${gid}`,{method:checked?'POST':'DELETE'})}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function escAttr(s){return esc(s)}
 boot();
