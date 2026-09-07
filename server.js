@@ -177,7 +177,31 @@ app.delete('/api/admin/users/:uid/groups/:gid',auth,admin,async(req,res)=>{await
 
 // Free external schedulers (for example cron-job.org) can POST here every 5 minutes.
 app.post('/api/cron/reminders',async(req,res)=>{
-  const secret=process.env.CRON_SECRET;if(!secret)return res.status(503).json({error:'CRON_SECRET is not configured'});
+  console.log('CRON /api/cron/reminders received', new Date().toISOString());
+
+  const secret=process.env.CRON_SECRET;
+
+  if(!secret){
+    console.error('CRON_SECRET is not configured');
+    return res.status(503).type('text/plain').send('NO_SECRET');
+  }
+
+  const authHeader=String(req.headers.authorization||'');
+
+  if(authHeader!==`Bearer ${secret}`){
+    console.warn('CRON unauthorized request');
+    return res.status(401).type('text/plain').send('UNAUTHORIZED');
+  }
+
+  try{
+    const result=await sendDueReminders(pool);
+    console.log('CRON reminders completed', result);
+    return res.status(200).type('text/plain').send(`OK ${result.sent}`);
+  }catch(e){
+    console.error('CRON reminder error',e);
+    return res.status(500).type('text/plain').send('REMINDER_FAILED');
+  }
+});
   const authHeader=String(req.headers.authorization||'');if(authHeader!==`Bearer ${secret}`)return res.status(401).json({error:'unauthorized'});
   try{const result=await sendDueReminders(pool);res.json({ok:true,...result})}catch(e){console.error(e);res.status(500).json({error:'reminder_failed'})}
 });
