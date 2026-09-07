@@ -7,7 +7,6 @@ import pg from 'pg';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendDueReminders } from './reminders.js';
-
 const { Pool } = pg;
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,12 +21,49 @@ app.use(express.static(path.join(__dirname,'public')));
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET is required');
-
 function signUser(u){return jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role},JWT_SECRET,{expiresIn:'12h'})}
 function auth(req,res,next){try{const token=req.cookies.natzor_token;if(!token)return res.status(401).json({error:'not_authenticated'});req.user=jwt.verify(token,JWT_SECRET);next()}catch{res.status(401).json({error:'not_authenticated'})}}
 function admin(req,res,next){if(req.user?.role!=='admin')return res.status(403).json({error:'admin_only'});next()}
 function cookieOpts(){return {httpOnly:true,sameSite:'strict',secure:process.env.NODE_ENV==='production',maxAge:12*60*60*1000}}
 async function activePeriodId(client=pool){const {rows}=await client.query('SELECT id FROM score_periods WHERE active=true ORDER BY id DESC LIMIT 1');if(!rows[0])throw new Error('No active score period');return rows[0].id}
+
+/* V6: לימודים ופנימייה משתמשים באותן קבוצות ובאותם שיוכי תלמידים.
+   בבסיס הנתונים נשמרים עדיין שני סוגי קבוצות כדי לא לפגוע בהרשאות ובדוחות. */
+async function syncStudyDormGroups(client=pool){
+  await client.query(`
+    INSERT INTO groups(name,type,active,goal_target)
+    SELECT g.name,'dorm',g.active,g.goal_target
+    FROM groups g
+    WHERE g.type='class'
+      AND NOT EXISTS (SELECT 1 FROM groups x WHERE x.type='dorm' AND x.name=g.name)
+  `);
+  await client.query(`
+    INSERT INTO groups(name,type,active,goal_target)
+    SELECT g.name,'class',g.active,g.goal_target
+    FROM groups g
+    WHERE g.type='dorm'
+      AND NOT EXISTS (SELECT 1 FROM groups x WHERE x.type='class' AND x.name=g.name)
+  `);
+  await client.query(`
+    INSERT INTO group_students(group_id,student_id)
+    SELECT target.id,gs.student_id
+    FROM groups source
+    JOIN groups target ON target.name=source.name AND target.type<>source.type
+    JOIN group_students gs ON gs.group_id=source.id
+    ON CONFLICT DO NOTHING
+  `);
+}
+async function pairedGroup(client,gid){
+  const {rows}=await client.query(`
+    SELECT other.id
+    FROM groups g
+    JOIN groups other ON other.name=g.name AND other.type<>g.type
+    WHERE g.id=$1
+    ORDER BY other.id
+    LIMIT 1
+  `,[gid]);
+  return rows[0]?.id||null;
+}
 
 app.post('/api/auth/login',async(req,res)=>{
   const email=String(req.body.email||'').trim().toLowerCase(),password=String(req.body.password||'');
@@ -154,17 +190,83 @@ app.post('/api/admin/periods/start',auth,admin,async(req,res)=>{
   const client=await pool.connect();try{await client.query('BEGIN');await client.query('UPDATE score_periods SET active=false,ended_at=COALESCE(ended_at,now()) WHERE active=true');const {rows}=await client.query('INSERT INTO score_periods(name,active) VALUES($1,true) RETURNING *',[name]);await client.query('COMMIT');res.json(rows[0])}catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
 });
 
-app.get('/api/admin/groups',auth,admin,async(req,res)=>{const {rows}=await pool.query(`SELECT g.*,COALESCE(json_agg(json_build_object('id',s.id,'name',s.name) ORDER BY s.name) FILTER(WHERE s.id IS NOT NULL),'[]') members FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN students s ON s.id=gs.student_id WHERE g.active=true GROUP BY g.id ORDER BY g.type,g.name`);res.json(rows)});
-app.post('/api/admin/groups',auth,admin,async(req,res)=>{const {name,type}=req.body;if(!name||!['class','dorm'].includes(type))return res.status(400).json({error:'bad_request'});const {rows}=await pool.query('INSERT INTO groups(name,type) VALUES($1,$2) RETURNING *',[name.trim(),type]);res.json(rows[0])});
-app.put('/api/admin/groups/:id',auth,admin,async(req,res)=>{const {rows}=await pool.query('UPDATE groups SET name=$1 WHERE id=$2 RETURNING *',[String(req.body.name||'').trim(),Number(req.params.id)]);res.json(rows[0])});
-app.put('/api/admin/groups/:id/goal',auth,admin,async(req,res)=>{const target=Math.round(Number(req.body.target));if(!target||target<1)return res.status(400).json({error:'יעד חייב להיות מספר חיובי'});const {rows}=await pool.query('UPDATE groups SET goal_target=$1 WHERE id=$2 AND type=\'class\' RETURNING *',[target,Number(req.params.id)]);res.json(rows[0])});
-app.delete('/api/admin/groups/:id',auth,admin,async(req,res)=>{await pool.query('DELETE FROM groups WHERE id=$1',[Number(req.params.id)]);res.json({ok:true})});
+app.get('/api/admin/groups',auth,admin,async(req,res)=>{
+  await syncStudyDormGroups();
+  const {rows}=await pool.query(`SELECT g.*,COALESCE(json_agg(json_build_object('id',s.id,'name',s.name) ORDER BY s.name) FILTER(WHERE s.id IS NOT NULL),'[]') members FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN students s ON s.id=gs.student_id WHERE g.active=true GROUP BY g.id ORDER BY g.type,g.name`);
+  res.json(rows)
+});
+
+app.post('/api/admin/groups',auth,admin,async(req,res)=>{
+  const name=String(req.body.name||'').trim();
+  if(!name)return res.status(400).json({error:'יש להזין שם קבוצה'});
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    let {rows}=await client.query(`SELECT * FROM groups WHERE name=$1 AND type='class' ORDER BY id LIMIT 1`,[name]);
+    let study=rows[0];
+    if(!study){({rows}=await client.query(`INSERT INTO groups(name,type) VALUES($1,'class') RETURNING *`,[name]));study=rows[0]}
+    await client.query(`INSERT INTO groups(name,type,goal_target) SELECT $1,'dorm',$2 WHERE NOT EXISTS(SELECT 1 FROM groups WHERE name=$1 AND type='dorm')`,[name,study.goal_target||500]);
+    await client.query('COMMIT');
+    res.json(study);
+  }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
+});
+
+app.put('/api/admin/groups/:id',auth,admin,async(req,res)=>{
+  const id=Number(req.params.id),name=String(req.body.name||'').trim();
+  if(!name)return res.status(400).json({error:'יש להזין שם קבוצה'});
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const {rows:grows}=await client.query('SELECT * FROM groups WHERE id=$1',[id]);const g=grows[0];
+    if(!g){await client.query('ROLLBACK');return res.status(404).json({error:'not_found'})}
+    await client.query('UPDATE groups SET name=$1 WHERE name=$2 AND type IN (\'class\',\'dorm\')',[name,g.name]);
+    const {rows}=await client.query('SELECT * FROM groups WHERE id=$1',[id]);
+    await client.query('COMMIT');res.json(rows[0]);
+  }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
+});
+
+app.put('/api/admin/groups/:id/goal',auth,admin,async(req,res)=>{
+  const target=Math.round(Number(req.body.target));if(!target||target<1)return res.status(400).json({error:'יעד חייב להיות מספר חיובי'});
+  const id=Number(req.params.id);
+  const {rows:grows}=await pool.query('SELECT name FROM groups WHERE id=$1',[id]);if(!grows[0])return res.status(404).json({error:'not_found'});
+  await pool.query('UPDATE groups SET goal_target=$1 WHERE name=$2 AND type IN (\'class\',\'dorm\')',[target,grows[0].name]);
+  const {rows}=await pool.query('SELECT * FROM groups WHERE id=$1',[id]);res.json(rows[0]);
+});
+
+app.delete('/api/admin/groups/:id',auth,admin,async(req,res)=>{
+  const id=Number(req.params.id);
+  const {rows}=await pool.query('SELECT name FROM groups WHERE id=$1',[id]);
+  if(rows[0])await pool.query('DELETE FROM groups WHERE name=$1 AND type IN (\'class\',\'dorm\')',[rows[0].name]);
+  res.json({ok:true});
+});
 
 app.post('/api/admin/students',auth,admin,async(req,res)=>{const name=String(req.body.name||'').trim();if(!name)return res.status(400).json({error:'name_required'});const {rows}=await pool.query('INSERT INTO students(name) VALUES($1) RETURNING *',[name]);res.json(rows[0])});
 app.put('/api/admin/students/:id',auth,admin,async(req,res)=>{const {rows}=await pool.query('UPDATE students SET name=$1 WHERE id=$2 RETURNING *',[String(req.body.name||'').trim(),Number(req.params.id)]);res.json(rows[0])});
 app.delete('/api/admin/students/:id',auth,admin,async(req,res)=>{await pool.query('DELETE FROM students WHERE id=$1',[Number(req.params.id)]);res.json({ok:true})});
-app.post('/api/admin/groups/:gid/students/:sid',auth,admin,async(req,res)=>{await pool.query('INSERT INTO group_students(group_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[Number(req.params.gid),Number(req.params.sid)]);res.json({ok:true})});
-app.delete('/api/admin/groups/:gid/students/:sid',auth,admin,async(req,res)=>{await pool.query('DELETE FROM group_students WHERE group_id=$1 AND student_id=$2',[Number(req.params.gid),Number(req.params.sid)]);res.json({ok:true})});
+
+app.post('/api/admin/groups/:gid/students/:sid',auth,admin,async(req,res)=>{
+  const gid=Number(req.params.gid),sid=Number(req.params.sid);
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    await client.query('INSERT INTO group_students(group_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[gid,sid]);
+    const other=await pairedGroup(client,gid);
+    if(other)await client.query('INSERT INTO group_students(group_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[other,sid]);
+    await client.query('COMMIT');res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
+});
+
+app.delete('/api/admin/groups/:gid/students/:sid',auth,admin,async(req,res)=>{
+  const gid=Number(req.params.gid),sid=Number(req.params.sid);
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const other=await pairedGroup(client,gid);
+    await client.query('DELETE FROM group_students WHERE group_id=$1 AND student_id=$2',[gid,sid]);
+    if(other)await client.query('DELETE FROM group_students WHERE group_id=$1 AND student_id=$2',[other,sid]);
+    await client.query('COMMIT');res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
+});
 
 app.post('/api/admin/users',auth,admin,async(req,res)=>{const name=String(req.body.name||'').trim(),email=String(req.body.email||'').trim().toLowerCase(),password=String(req.body.password||''),role=req.body.role;if(!name||!email||password.length<8||!['admin','study','dorm'].includes(role))return res.status(400).json({error:'יש למלא שם, אימייל, תפקיד וסיסמה של 8 תווים לפחות'});const hash=await bcrypt.hash(password,12);const {rows}=await pool.query('INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4) RETURNING id,name,email,role,active',[name,email,hash,role]);res.json(rows[0])});
 app.put('/api/admin/users/:id',auth,admin,async(req,res)=>{const id=Number(req.params.id),name=String(req.body.name||'').trim(),role=req.body.role,active=!!req.body.active;const {rows}=await pool.query('UPDATE users SET name=$1,role=$2,active=$3 WHERE id=$4 RETURNING id,name,email,role,active',[name,role,active,id]);res.json(rows[0])});
@@ -178,21 +280,10 @@ app.delete('/api/admin/users/:uid/groups/:gid',auth,admin,async(req,res)=>{await
 // Free external schedulers (for example cron-job.org) can POST here every 5 minutes.
 app.post('/api/cron/reminders',async(req,res)=>{
   console.log('CRON /api/cron/reminders received', new Date().toISOString());
-
   const secret=process.env.CRON_SECRET;
-
-  if(!secret){
-    console.error('CRON_SECRET is not configured');
-    return res.status(503).type('text/plain').send('NO_SECRET');
-  }
-
+  if(!secret){console.error('CRON_SECRET is not configured');return res.status(503).type('text/plain').send('NO_SECRET')}
   const authHeader=String(req.headers.authorization||'');
-
-  if(authHeader!==`Bearer ${secret}`){
-    console.warn('CRON unauthorized request');
-    return res.status(401).type('text/plain').send('UNAUTHORIZED');
-  }
-
+  if(authHeader!==`Bearer ${secret}`){console.warn('CRON unauthorized request');return res.status(401).type('text/plain').send('UNAUTHORIZED')}
   try{
     const result=await sendDueReminders(pool);
     console.log('CRON reminders completed', result);
@@ -202,10 +293,11 @@ app.post('/api/cron/reminders',async(req,res)=>{
     return res.status(500).type('text/plain').send('REMINDER_FAILED');
   }
 });
-  const authHeader=String(req.headers.authorization||'');if(authHeader!==`Bearer ${secret}`)return res.status(401).json({error:'unauthorized'});
-  try{const result=await sendDueReminders(pool);res.json({ok:true,...result})}catch(e){console.error(e);res.status(500).json({error:'reminder_failed'})}
-});
 
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'שגיאת שרת'})});
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
-app.listen(process.env.PORT||3000,()=>console.log('Natzor Lashon running'));
+
+syncStudyDormGroups()
+  .then(()=>console.log('Study/dorm groups synchronized'))
+  .catch(e=>console.error('Initial group sync failed',e))
+  .finally(()=>app.listen(process.env.PORT||3000,()=>console.log('Natzor Lashon running')));
