@@ -42,9 +42,13 @@ CREATE TABLE IF NOT EXISTS reports (
   report_type TEXT NOT NULL CHECK (report_type IN ('plus','minus')),
   area TEXT NOT NULL CHECK (area IN ('class','dorm')),
   hour_slot TIMESTAMPTZ NOT NULL DEFAULT date_trunc('hour', now()),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(student_id, report_type, hour_slot)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Migration from v2: the old version limited each +/- to once per clock hour.
+-- v3 enforces a true rolling 5-minute cooldown in server code instead.
+ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_student_id_report_type_hour_slot_key;
 
 CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_student ON reports(student_id);
+CREATE INDEX IF NOT EXISTS idx_reports_student_type_created ON reports(student_id, report_type, created_at DESC);

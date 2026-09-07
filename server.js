@@ -75,12 +75,27 @@ app.get('/api/groups/:id/students',auth, async(req,res)=>{
     if(!rowCount) return res.status(403).json({error:'forbidden'});
   }
   const {rows}=await pool.query(`
-    SELECT s.id,s.name,COALESCE(SUM(CASE WHEN r.report_type='plus' THEN 1 ELSE -1 END),0)::int AS score,
-      EXISTS(SELECT 1 FROM reports r2 WHERE r2.student_id=s.id AND r2.report_type='plus' AND r2.hour_slot=date_trunc('hour',now())) AS plus_locked,
-      EXISTS(SELECT 1 FROM reports r3 WHERE r3.student_id=s.id AND r3.report_type='minus' AND r3.hour_slot=date_trunc('hour',now())) AS minus_locked
-    FROM students s JOIN group_students gs ON gs.student_id=s.id
-    LEFT JOIN reports r ON r.student_id=s.id
-    WHERE gs.group_id=$1 AND s.active=true GROUP BY s.id,s.name ORDER BY s.name
+    WITH scores AS (
+      SELECT s.id,s.name,
+        COUNT(r.id) FILTER (WHERE r.report_type='plus')::int AS plus_count,
+        COUNT(r.id) FILTER (WHERE r.report_type='minus')::int AS minus_count,
+        MAX(r.created_at) FILTER (WHERE r.report_type='plus') AS last_plus_at,
+        MAX(r.created_at) FILTER (WHERE r.report_type='minus') AS last_minus_at
+      FROM students s
+      JOIN group_students gs ON gs.student_id=s.id
+      LEFT JOIN reports r ON r.student_id=s.id
+      WHERE gs.group_id=$1 AND s.active=true
+      GROUP BY s.id,s.name
+    )
+    SELECT id,name,
+      (plus_count-minus_count)::int AS base_score,
+      (FLOOR(plus_count/20.0)*5)::int AS bonus,
+      (plus_count-minus_count+FLOOR(plus_count/20.0)*5)::int AS score,
+      (last_plus_at IS NOT NULL AND last_plus_at > now()-interval '5 minutes') AS plus_locked,
+      (last_minus_at IS NOT NULL AND last_minus_at > now()-interval '5 minutes') AS minus_locked,
+      CASE WHEN last_plus_at IS NOT NULL AND last_plus_at > now()-interval '5 minutes' THEN last_plus_at+interval '5 minutes' END AS plus_locked_until,
+      CASE WHEN last_minus_at IS NOT NULL AND last_minus_at > now()-interval '5 minutes' THEN last_minus_at+interval '5 minutes' END AS minus_locked_until
+    FROM scores ORDER BY name
   `,[gid]);
   res.json(rows);
 });
@@ -92,16 +107,33 @@ app.post('/api/reports',auth, async(req,res)=>{
     if(req.user.role==='study' && area!=='class') return res.status(403).json({error:'forbidden'});
     if(req.user.role==='dorm' && area!=='dorm') return res.status(403).json({error:'forbidden'});
   }
+
+  const client=await pool.connect();
   try{
-    const {rows}=await pool.query(`
+    await client.query('BEGIN');
+    // Serialize reports for the same student + report type so two simultaneous clicks cannot bypass the cooldown.
+    const lockKey=studentId*2+(type==='plus'?0:1);
+    await client.query('SELECT pg_advisory_xact_lock($1)',[lockKey]);
+    const recent=await client.query(`
+      SELECT created_at, created_at+interval '5 minutes' AS locked_until
+      FROM reports
+      WHERE student_id=$1 AND report_type=$2
+      ORDER BY created_at DESC LIMIT 1
+    `,[studentId,type]);
+    if(recent.rows[0] && new Date(recent.rows[0].created_at).getTime()>Date.now()-5*60*1000){
+      await client.query('ROLLBACK');
+      return res.status(409).json({error:'אפשר לבצע דיווח נוסף מאותו סוג רק לאחר 5 דקות',locked_until:recent.rows[0].locked_until});
+    }
+    const {rows}=await client.query(`
       INSERT INTO reports(student_id,reporter_id,report_type,area)
       VALUES($1,$2,$3,$4) RETURNING *
     `,[studentId,req.user.id,type,area]);
+    await client.query('COMMIT');
     res.json(rows[0]);
   }catch(e){
-    if(e.code==='23505') return res.status(409).json({error:'כבר בוצע דיווח מסוג זה לתלמיד בשעה הנוכחית'});
+    try{await client.query('ROLLBACK')}catch{}
     throw e;
-  }
+  }finally{client.release()}
 });
 
 app.get('/api/admin/dashboard',auth,admin,async(req,res)=>{
@@ -118,6 +150,38 @@ app.get('/api/admin/dashboard',auth,admin,async(req,res)=>{
       COUNT(*) FILTER(WHERE report_type='minus')::int minus FROM reports`)
   ]);
   res.json({students:students.rows,users:users.rows,reports:reports.rows,summary:summary.rows[0]});
+});
+
+app.get('/api/admin/class-rankings',auth,admin,async(req,res)=>{
+  const {rows}=await pool.query(`
+    WITH student_scores AS (
+      SELECT s.id,s.name,
+        COUNT(r.id) FILTER (WHERE r.report_type='plus')::int AS plus_count,
+        COUNT(r.id) FILTER (WHERE r.report_type='minus')::int AS minus_count
+      FROM students s
+      LEFT JOIN reports r ON r.student_id=s.id
+      WHERE s.active=true
+      GROUP BY s.id,s.name
+    ), ranked AS (
+      SELECT g.id AS group_id,g.name AS group_name,ss.id AS student_id,ss.name AS student_name,
+        (ss.plus_count-ss.minus_count)::int AS base_score,
+        (FLOOR(ss.plus_count/20.0)*5)::int AS bonus,
+        (ss.plus_count-ss.minus_count+FLOOR(ss.plus_count/20.0)*5)::int AS score
+      FROM groups g
+      JOIN group_students gs ON gs.group_id=g.id
+      JOIN student_scores ss ON ss.id=gs.student_id
+      WHERE g.type='class' AND g.active=true
+    )
+    SELECT group_id,group_name,
+      COALESCE(SUM(score),0)::int AS class_score,
+      COALESCE(json_agg(json_build_object(
+        'id',student_id,'name',student_name,'base_score',base_score,'bonus',bonus,'score',score
+      ) ORDER BY score DESC, student_name ASC),'[]') AS students
+    FROM ranked
+    GROUP BY group_id,group_name
+    ORDER BY group_name
+  `);
+  res.json(rows);
 });
 
 app.get('/api/admin/groups',auth,admin,async(req,res)=>{
