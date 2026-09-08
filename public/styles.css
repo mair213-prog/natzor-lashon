@@ -10,3 +10,196 @@
 /* V10 */
 .student-name-line{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.rank-badge{display:inline-flex;align-items:center;border-radius:999px;padding:3px 7px;font-size:11px;font-weight:800;white-space:nowrap}.rank-badge.positive{background:#edf8ef;border:1px solid #b8ddbe}.rank-badge.negative{background:#fff3e7;border:1px solid #efc28e}.bulk-permissions{margin:8px 0 12px}.leading-group{border:3px solid #d4a72c!important;box-shadow:0 0 0 3px #d4a72c22,0 10px 30px #b78a2228!important;position:relative}.leading-group:before{content:"🏆 מובילה";position:absolute;top:-13px;left:14px;background:#f7df8b;border:1px solid #c69820;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:900}
 .results-page{background:#f4f6fa}.results-hero{background:linear-gradient(115deg,#111c31,#1b2d4b);text-align:center;padding:28px 12px}.results-logo{font-family:Georgia,serif;font-size:clamp(34px,7vw,64px);font-weight:900;background:linear-gradient(180deg,#fff9e6,#f1d58a);-webkit-background-clip:text;background-clip:text;color:transparent}.results-slogan{color:#e7dcc0}.results-wrap{max-width:900px;margin:22px auto;padding:0 14px}.public-leader{border:4px solid #d4a72c;background:linear-gradient(135deg,#fffaf0,#fff1b8);border-radius:22px;padding:22px;text-align:center;box-shadow:0 12px 32px #b78a2228}.public-leader .name{font-size:30px;font-weight:900}.public-leader .points{font-size:20px;font-weight:800}.public-row{display:grid;grid-template-columns:55px minmax(0,1fr) 75px;align-items:center;gap:10px;padding:12px 6px;border-bottom:1px solid #eceef3}.public-row.top{background:#fffaf0;border-radius:12px}.public-place{text-align:center;font-size:22px;font-weight:900}.public-name{font-weight:900}.public-class{font-size:12px;color:#6b7280}.public-score{text-align:center;font-size:20px;font-weight:900;background:#eef1f5;border-radius:11px;padding:8px 3px}
+
+
+/* V10.1 — synchronized gold leader in class/dorm pickers */
+.group-picker-btn{position:relative;overflow:visible}
+.group-picker-btn.leader-picker{
+  border:3px solid #d4a72c!important;
+  box-shadow:0 0 0 3px rgba(212,167,44,.16),0 8px 24px rgba(183,138,34,.20)!important;
+  background:linear-gradient(135deg,#fff8df,#f7e4a2);
+  color:#4d3a08;
+  font-weight:900;
+}
+.group-picker-btn.leader-picker.active{
+  background:linear-gradient(135deg,#2a3240,#172033);
+  color:#fff6cf;
+}
+.picker-crown{filter:drop-shadow(0 2px 2px rgba(0,0,0,.15))}
+
+/* V10.1 — TV/lobby leaderboard: designed to fit 20 students without scrolling */
+.lobby-results{
+  height:100vh;
+  min-height:100vh;
+  overflow:hidden;
+  background:radial-gradient(circle at 50% 0,#eef4ff 0,#f5f7fb 44%,#eef1f6 100%);
+}
+.lobby-shell{
+  height:100vh;
+  max-width:1600px;
+  margin:0 auto;
+  padding:clamp(8px,1.2vh,16px) clamp(12px,1.6vw,28px);
+  display:grid;
+  grid-template-rows:auto minmax(0,1fr);
+  gap:clamp(8px,1.2vh,14px);
+}
+.lobby-top{
+  display:grid;
+  grid-template-columns:minmax(220px,.9fr) minmax(360px,1.35fr) minmax(170px,.75fr);
+  align-items:center;
+  gap:clamp(10px,1.5vw,24px);
+  background:linear-gradient(115deg,#111c31,#1b2d4b);
+  color:#fff;
+  border-radius:clamp(14px,1.5vw,24px);
+  padding:clamp(10px,1.4vh,18px) clamp(16px,1.5vw,26px);
+  box-shadow:0 8px 28px rgba(23,32,51,.18);
+}
+.lobby-brand{text-align:center}
+.lobby-brand .results-logo{
+  font-size:clamp(30px,3.2vw,54px);
+  line-height:.95;
+}
+.lobby-brand .results-slogan{
+  font-size:clamp(11px,1vw,16px);
+  margin-top:4px;
+}
+.lobby-leader{
+  margin:0;
+  min-height:0;
+  border-width:3px;
+  border-radius:18px;
+  padding:clamp(8px,1vh,13px) 16px;
+  box-shadow:none;
+}
+.lobby-leader .leader-kicker{
+  font-size:clamp(10px,.9vw,14px);
+  font-weight:800;
+  color:#765a0d;
+}
+.lobby-leader .name{
+  font-size:clamp(22px,2.1vw,36px);
+  line-height:1.05;
+  margin:2px 0;
+}
+.lobby-leader .points{
+  font-size:clamp(14px,1.25vw,21px);
+}
+.lobby-clock{
+  text-align:center;
+  color:#f5e6b7;
+  white-space:nowrap;
+}
+.clock-time{
+  font-size:clamp(28px,3vw,50px);
+  font-weight:950;
+  line-height:1;
+}
+.clock-date{
+  margin-top:5px;
+  font-size:clamp(10px,.95vw,15px);
+  color:#dfe5ee;
+}
+
+.lobby-board{
+  min-height:0;
+  overflow:hidden;
+  background:rgba(255,255,255,.96);
+  border:1px solid rgba(255,255,255,.9);
+  border-radius:clamp(14px,1.5vw,22px);
+  box-shadow:0 8px 28px rgba(23,32,51,.10);
+  padding:clamp(8px,1vh,14px) clamp(10px,1vw,18px);
+  display:grid;
+  grid-template-rows:auto minmax(0,1fr);
+}
+.lobby-board-title{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:0 6px clamp(5px,.7vh,9px);
+  border-bottom:1px solid #e7eaf0;
+}
+.lobby-board-title h1{
+  margin:0;
+  font-size:clamp(18px,1.5vw,25px);
+}
+.live-pill{
+  font-size:clamp(10px,.8vw,13px);
+  font-weight:800;
+  color:#237342;
+  background:#edf8ef;
+  border:1px solid #c7e6ce;
+  padding:4px 9px;
+  border-radius:999px;
+}
+.lobby-students{
+  min-height:0;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  grid-template-rows:repeat(10,minmax(0,1fr));
+  grid-auto-flow:column;
+  column-gap:clamp(12px,1.5vw,28px);
+  row-gap:0;
+  padding-top:4px;
+}
+.lobby-row{
+  min-height:0;
+  height:100%;
+  display:grid;
+  grid-template-columns:clamp(34px,2.7vw,48px) minmax(0,1fr) clamp(54px,4.8vw,78px);
+  align-items:center;
+  gap:clamp(5px,.7vw,10px);
+  padding:clamp(2px,.35vh,5px) clamp(5px,.5vw,8px);
+  border-bottom:1px solid #edf0f4;
+  border-radius:9px;
+}
+.lobby-row.top{
+  background:linear-gradient(90deg,rgba(247,223,139,.26),rgba(255,255,255,0));
+}
+.lobby-row .public-place{
+  font-size:clamp(15px,1.35vw,22px);
+}
+.public-student-info{min-width:0}
+.lobby-row .public-name{
+  font-size:clamp(13px,1.05vw,18px);
+  line-height:1.05;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.lobby-row .public-class{
+  font-size:clamp(9px,.72vw,12px);
+  line-height:1.05;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  margin-top:2px;
+}
+.public-rank{font-weight:800}
+.lobby-row .public-score{
+  font-size:clamp(14px,1.15vw,20px);
+  padding:clamp(4px,.45vh,7px) 3px;
+  border-radius:9px;
+}
+.results-error{
+  grid-column:1/-1;
+  display:grid;
+  place-items:center;
+  font-size:22px;
+  color:#8b1d1d;
+}
+
+/* Fallback for narrower screens; TV layout stays two-column at common 16:9 widths */
+@media(max-width:760px){
+  .lobby-results{height:auto;overflow:auto}
+  .lobby-shell{height:auto;min-height:100vh}
+  .lobby-top{grid-template-columns:1fr}
+  .lobby-clock{display:none}
+  .lobby-students{display:block}
+  .lobby-row{min-height:58px}
+}
+@media(max-height:650px) and (min-width:761px){
+  .lobby-shell{padding-top:6px;padding-bottom:6px;gap:6px}
+  .lobby-top{padding-top:7px;padding-bottom:7px}
+  .lobby-board{padding-top:6px;padding-bottom:6px}
+  .lobby-row .public-class{display:none}
+}
