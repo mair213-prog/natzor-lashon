@@ -1,10 +1,10 @@
-<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>נצור לשונך</title><link rel="stylesheet" href="/styles.css"></head>
-<body><header><div class="wrap header-inner"><div class="wordmark nav-sound" onclick="playSound('nav')"><span class="wordmark-main">נצור לשונך</span><span class="wordmark-sub">מילים טובות. אווירה טובה.</span></div></div></header>
+<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>נצור לשונך</title><meta name="theme-color" content="#111c31"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icons/icon-192.png"><link rel="apple-touch-icon" href="/icons/icon-192.png"><link rel="stylesheet" href="/styles.css"></head>
+<body><header><div class="wrap header-inner"><div class="wordmark nav-sound" onclick="playSound('nav')"><span class="wordmark-main">נצור לשונך</span><span class="wordmark-sub">בוחרים לדבר נקי</span></div></div></header>
 <div class="wrap">
 <section id="login" class="panel"><h2>כניסה לצוות</h2><input id="email" class="input" placeholder="אימייל"><div style="height:7px"></div><input id="password" class="input" type="password" placeholder="סיסמה"><div style="height:9px"></div><button class="btn active" onclick="login()">כניסה</button><div id="loginMsg" class="msg hidden"></div></section>
 <section id="app" class="hidden">
-<div class="panel"><div class="row"><div class="grow"><b id="who"></b><div class="small" id="role"></div></div><button class="btn" onclick="logout()">יציאה</button></div></div>
+<div class="panel"><div class="row"><div class="grow"><b id="who"></b><div class="small" id="role"></div></div><button id="installAppBtn" class="btn hidden" onclick="installApp()">📲 התקנת אפליקציה</button><button class="btn" onclick="logout()">יציאה</button></div></div>
 <div id="leaderCard" class="panel"></div>
 <div class="panel"><div class="tabs"><button id="classTab" class="btn active" onclick="openArea('class')">🏫 לימודים</button><button id="dormTab" class="btn" onclick="openArea('dorm')">🏠 פנימייה</button><button id="adminTab" class="btn hidden" onclick="openAdmin()">🔐 מנהל</button></div></div>
 <div id="reporting"></div><div id="admin" class="hidden"></div>
-</section></div><script src="/app.js"></script></body></html>
+</section></div><script src="/app.js"></script><script>if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js").catch(()=>{}))}</script></body></html>
