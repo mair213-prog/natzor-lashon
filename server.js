@@ -90,7 +90,7 @@ app.get('/api/leaderboard',auth,async(req,res)=>{
       FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=(SELECT id FROM p)
       WHERE s.active=true GROUP BY s.id
     ), class_scores AS (
-      SELECT g.id,g.name,g.goal_target,COALESCE(SUM(ss.plus_count-ss.minus_count+FLOOR(ss.plus_count/20.0)*5),0)::int score
+      SELECT g.id,g.name,g.goal_target,COALESCE(SUM(ss.plus_count*3-ss.minus_count+FLOOR(ss.plus_count/20.0)*5),0)::int score
       FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN student_scores ss ON ss.id=gs.student_id
       WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name,g.goal_target
     ) SELECT id,name,score,goal_target,(score>=goal_target) AS goal_reached FROM class_scores ORDER BY score DESC,name ASC LIMIT 1`);
@@ -115,16 +115,16 @@ app.get('/api/groups/:id/students',auth,async(req,res)=>{
       SELECT s.id,s.name,
         COUNT(r.id) FILTER (WHERE r.report_type='plus')::int plus_count,
         COUNT(r.id) FILTER (WHERE r.report_type='minus')::int minus_count,
-        MAX(r.created_at) FILTER (WHERE r.report_type='plus') last_plus_at,
-        MAX(r.created_at) FILTER (WHERE r.report_type='minus') last_minus_at
-      FROM students s JOIN group_students gs ON gs.student_id=s.id
+        MAX(r.created_at) FILTER (WHERE r.report_type='plus' AND r.area=g.type) last_plus_at,
+        MAX(r.created_at) FILTER (WHERE r.report_type='minus' AND r.area=g.type) last_minus_at
+      FROM students s JOIN group_students gs ON gs.student_id=s.id JOIN groups g ON g.id=gs.group_id
       LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=(SELECT id FROM p)
       WHERE gs.group_id=$1 AND s.active=true GROUP BY s.id,s.name
-    ) SELECT id,name,(plus_count-minus_count)::int base_score,(FLOOR(plus_count/20.0)*5)::int bonus,
-      (plus_count-minus_count+FLOOR(plus_count/20.0)*5)::int score,
-      (last_plus_at IS NOT NULL AND last_plus_at>now()-interval '5 minutes') plus_locked,
+    ) SELECT id,name,(plus_count*3-minus_count)::int base_score,(FLOOR(plus_count/20.0)*5)::int bonus,
+      (plus_count*3-minus_count+FLOOR(plus_count/20.0)*5)::int score,
+      (last_plus_at IS NOT NULL AND (last_plus_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date) plus_locked,
       (last_minus_at IS NOT NULL AND last_minus_at>now()-interval '5 minutes') minus_locked,
-      CASE WHEN last_plus_at IS NOT NULL AND last_plus_at>now()-interval '5 minutes' THEN last_plus_at+interval '5 minutes' END plus_locked_until,
+      CASE WHEN last_plus_at IS NOT NULL AND (last_plus_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date THEN date_trunc('day',now() AT TIME ZONE 'Asia/Jerusalem')+interval '1 day' END plus_locked_until,
       CASE WHEN last_minus_at IS NOT NULL AND last_minus_at>now()-interval '5 minutes' THEN last_minus_at+interval '5 minutes' END minus_locked_until
     FROM scores ORDER BY name`,[gid]);res.json(rows);
 });
@@ -138,13 +138,43 @@ app.post('/api/reports',auth,async(req,res)=>{
   }
   const client=await pool.connect();
   try{
-    await client.query('BEGIN');const lockKey=studentId*2+(type==='plus'?0:1);await client.query('SELECT pg_advisory_xact_lock($1)',[lockKey]);
-    const recent=await client.query(`SELECT created_at,created_at+interval '5 minutes' locked_until FROM reports WHERE student_id=$1 AND report_type=$2 ORDER BY created_at DESC LIMIT 1`,[studentId,type]);
-    if(recent.rows[0]&&new Date(recent.rows[0].created_at).getTime()>Date.now()-5*60*1000){await client.query('ROLLBACK');return res.status(409).json({error:'אפשר לבצע דיווח נוסף מאותו סוג רק לאחר 5 דקות',locked_until:recent.rows[0].locked_until})}
+    await client.query('BEGIN');
+    // Separate lock per student + report type + area prevents double-click races without blocking the other area.
+    const lockKey=studentId*10+(type==='plus'?0:2)+(area==='dorm'?1:0);await client.query('SELECT pg_advisory_xact_lock($1)',[lockKey]);
     const pid=await activePeriodId(client);
+    const membership=await client.query(`SELECT 1 FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE gs.student_id=$1 AND g.type=$2 AND g.active=true LIMIT 1`,[studentId,area]);
+    if(!membership.rowCount){await client.query('ROLLBACK');return res.status(400).json({error:'התלמיד אינו משויך לקבוצה באזור זה'})}
+    if(req.user.role!=='admin'){
+      const permitted=await client.query(`SELECT 1 FROM user_groups ug JOIN groups g ON g.id=ug.group_id JOIN group_students gs ON gs.group_id=g.id WHERE ug.user_id=$1 AND gs.student_id=$2 AND g.type=$3 LIMIT 1`,[req.user.id,studentId,area]);
+      if(!permitted.rowCount){await client.query('ROLLBACK');return res.status(403).json({error:'אין לך הרשאה לדווח על תלמיד זה'})}
+    }
+    if(type==='plus'){
+      const recent=await client.query(`SELECT created_at FROM reports WHERE student_id=$1 AND report_type='plus' AND area=$2 AND period_id=$3 AND (created_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date LIMIT 1`,[studentId,area,pid]);
+      if(recent.rowCount){await client.query('ROLLBACK');return res.status(409).json({error:`כבר ניתן לתלמיד פלוס היום ב${area==='class'?'לימודים':'פנימייה'}. הפלוס ייפתח שוב מחר.`})}
+    }else{
+      const recent=await client.query(`SELECT created_at,created_at+interval '5 minutes' locked_until FROM reports WHERE student_id=$1 AND report_type='minus' AND area=$2 AND period_id=$3 ORDER BY created_at DESC LIMIT 1`,[studentId,area,pid]);
+      if(recent.rows[0]&&new Date(recent.rows[0].created_at).getTime()>Date.now()-5*60*1000){await client.query('ROLLBACK');return res.status(409).json({error:'אפשר לתת מינוס נוסף לאחר 5 דקות',locked_until:recent.rows[0].locked_until})}
+    }
     const {rows}=await client.query(`INSERT INTO reports(student_id,reporter_id,report_type,area,period_id) VALUES($1,$2,$3,$4,$5) RETURNING *`,[studentId,req.user.id,type,area,pid]);
     await client.query('COMMIT');res.json(rows[0]);
   }catch(e){try{await client.query('ROLLBACK')}catch{};throw e}finally{client.release()}
+});
+
+app.get('/api/public/results',async(req,res)=>{
+  try{
+    const pid=await activePeriodId();
+    const {rows:students}=await pool.query(`WITH scores AS (
+      SELECT s.id,s.name,COUNT(r.id) FILTER(WHERE r.report_type='plus')::int p,COUNT(r.id) FILTER(WHERE r.report_type='minus')::int m
+      FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id,s.name
+    ) SELECT sc.id,sc.name,(sc.p*3-sc.m+FLOOR(sc.p/20.0)*5)::int score,
+      COALESCE((SELECT g.name FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE gs.student_id=sc.id AND g.type='class' AND g.active=true ORDER BY g.name LIMIT 1),'') class_name
+      FROM scores sc ORDER BY score DESC,sc.name LIMIT 20`,[pid]);
+    const {rows:leaders}=await pool.query(`WITH scores AS (
+      SELECT s.id,(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int score
+      FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id
+    ) SELECT g.id,g.name,COALESCE(SUM(sc.score),0)::int score FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN scores sc ON sc.id=gs.student_id WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name ORDER BY score DESC,g.name LIMIT 1`,[pid]);
+    res.set('Cache-Control','no-store');res.json({leader:leaders[0]||null,students});
+  }catch(e){console.error(e);res.status(500).json({error:'שגיאה בטעינת התוצאות'})}
 });
 
 app.get('/api/admin/dashboard',auth,admin,async(req,res)=>{
@@ -164,7 +194,7 @@ app.get('/api/admin/class-rankings',auth,admin,async(req,res)=>{
       SELECT s.id,s.name,COUNT(r.id) FILTER(WHERE r.report_type='plus')::int plus_count,COUNT(r.id) FILTER(WHERE r.report_type='minus')::int minus_count
       FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=(SELECT id FROM p) WHERE s.active=true GROUP BY s.id,s.name
     ), ranked AS (
-      SELECT g.id group_id,g.name group_name,g.goal_target,ss.id student_id,ss.name student_name,(ss.plus_count-ss.minus_count)::int base_score,(FLOOR(ss.plus_count/20.0)*5)::int bonus,(ss.plus_count-ss.minus_count+FLOOR(ss.plus_count/20.0)*5)::int score
+      SELECT g.id group_id,g.name group_name,g.goal_target,ss.id student_id,ss.name student_name,(ss.plus_count*3-ss.minus_count)::int base_score,(FLOOR(ss.plus_count/20.0)*5)::int bonus,(ss.plus_count*3-ss.minus_count+FLOOR(ss.plus_count/20.0)*5)::int score
       FROM groups g JOIN group_students gs ON gs.group_id=g.id JOIN student_scores ss ON ss.id=gs.student_id WHERE g.type='class' AND g.active=true
     ) SELECT group_id,group_name,goal_target,COALESCE(SUM(score),0)::int class_score,
       COALESCE(json_agg(json_build_object('id',student_id,'name',student_name,'base_score',base_score,'bonus',bonus,'score',score) ORDER BY score DESC,student_name ASC),'[]') students
@@ -181,11 +211,11 @@ app.get('/api/admin/weekly',auth,admin,async(req,res)=>{
   const classMap=new Map();for(const r of classesQ.rows){if(!classMap.has(r.id))classMap.set(r.id,{id:r.id,name:r.name,students:new Set()});if(r.student_id)classMap.get(r.id).students.add(Number(r.student_id))}
   const reports=reportsQ.rows.map(r=>({...r,student_id:Number(r.student_id),ts:new Date(r.created_at).getTime()}));
   const now=new Date();const days=[];for(let i=6;i>=0;i--){const d=new Date(now);d.setHours(23,59,59,999);d.setDate(d.getDate()-i);days.push({label:d.toLocaleDateString('he-IL',{weekday:'short',day:'2-digit',month:'2-digit'}),end:d.getTime()})}
-  function scoreFor(studentIds,end){const counts=new Map();for(const r of reports){if(r.ts>end||!studentIds.has(r.student_id))continue;const c=counts.get(r.student_id)||{p:0,m:0};r.report_type==='plus'?c.p++:c.m++;counts.set(r.student_id,c)}let score=0;for(const c of counts.values())score+=c.p-c.m+Math.floor(c.p/20)*5;return score}
+  function scoreFor(studentIds,end){const counts=new Map();for(const r of reports){if(r.ts>end||!studentIds.has(r.student_id))continue;const c=counts.get(r.student_id)||{p:0,m:0};r.report_type==='plus'?c.p++:c.m++;counts.set(r.student_id,c)}let score=0;for(const c of counts.values())score+=c.p*3-c.m+Math.floor(c.p/20)*5;return score}
   const classes=[...classMap.values()].map(c=>({id:c.id,name:c.name,points:days.map(d=>scoreFor(c.students,d.end))}));
   const weekStart=days[0].end-24*60*60*1000+1;const studentWeek=new Map();
   const allStudentIds=new Set([...classMap.values()].flatMap(c=>[...c.students]));
-  for(const sid of allStudentIds){let beforeP=0,beforeM=0,weekP=0,weekM=0;for(const r of reports){if(r.student_id!==sid)continue;if(r.ts<weekStart){r.report_type==='plus'?beforeP++:beforeM++}else{r.report_type==='plus'?weekP++:weekM++}}const bonusDelta=(Math.floor((beforeP+weekP)/20)-Math.floor(beforeP/20))*5;studentWeek.set(sid,weekP-weekM+bonusDelta)}
+  for(const sid of allStudentIds){let beforeP=0,beforeM=0,weekP=0,weekM=0;for(const r of reports){if(r.student_id!==sid)continue;if(r.ts<weekStart){r.report_type==='plus'?beforeP++:beforeM++}else{r.report_type==='plus'?weekP++:weekM++}}const bonusDelta=(Math.floor((beforeP+weekP)/20)-Math.floor(beforeP/20))*5;studentWeek.set(sid,weekP*3-weekM+bonusDelta)}
   let star=null;for(const c of classMap.values()){for(const sid of c.students){const sc=studentWeek.get(sid)||0;if(!star||sc>star.score)star={student_id:sid,score:sc,class_name:c.name}}}
   if(star){const {rows}=await pool.query('SELECT name FROM students WHERE id=$1',[star.student_id]);star.name=rows[0]?.name||''}
   res.json({days:days.map(d=>d.label),classes,star,period:periodQ.rows[0]||null});
