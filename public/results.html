@@ -21,6 +21,10 @@
     </div>
   </section>
 
+  <section class="group-progress-panel">
+    <div class="group-progress-title">📊 מצב הקבוצות</div>
+    <div id="groupProgress" class="group-progress-grid"></div>
+  </section>
   <section class="lobby-board">
     <div class="lobby-board-title">
       <h1>🏆 20 התלמידים המובילים</h1>
@@ -56,6 +60,11 @@ async function refresh(){
     document.getElementById('publicLeader').innerHTML=g
       ? `<div class="leader-kicker">🏆 הקבוצה המובילה</div><div class="name">${esc(g.name)}</div><div class="points">${g.score} נקודות</div>`
       : 'עדיין אין נתונים';
+    document.getElementById('groupProgress').innerHTML=(d.groups||[]).map((x,i)=>`<div class="group-progress-card ${i===0?'first':''}">
+      <div class="group-progress-head"><span>${i===0?'🏆 ':''}${esc(x.name)}</span><b>${x.score} נק׳</b></div>
+      <div class="group-progress-track"><span style="width:${Math.max(0,Math.min(100,x.percent||0))}%"></span></div>
+      <div class="group-progress-percent">${x.percent||0}% ביחס למובילה</div>
+    </div>`).join('');
     document.getElementById('publicStudents').innerHTML=d.students.map((s,i)=>{
       const rnk=rank(s.score);
       return `<div class="public-row lobby-row ${i<3?'top':''}">

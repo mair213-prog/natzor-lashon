@@ -203,3 +203,26 @@
   .lobby-board{padding-top:6px;padding-bottom:6px}
   .lobby-row .public-class{display:none}
 }
+
+/* V10.2 */
+.lobby-leader .name,.lobby-leader .points{color:#382a08!important;text-shadow:none!important}
+.lobby-shell{grid-template-rows:auto auto minmax(0,1fr)}
+.group-progress-panel{background:rgba(255,255,255,.97);border-radius:16px;padding:7px 12px;box-shadow:0 5px 18px rgba(23,32,51,.08);overflow:hidden}
+.group-progress-title{font-weight:950;font-size:clamp(12px,1vw,16px);margin-bottom:5px}
+.group-progress-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:7px}
+.group-progress-card{border:1px solid #e3e6ec;border-radius:10px;padding:5px 7px;background:#fafbfc}
+.group-progress-card.first{border:2px solid #d4a72c;background:linear-gradient(135deg,#fff9e6,#fff0b7)}
+.group-progress-head{display:flex;justify-content:space-between;gap:6px;font-size:clamp(9px,.72vw,12px);font-weight:900}
+.group-progress-track{height:6px;border-radius:999px;background:#e7eaf0;overflow:hidden;margin:4px 0 2px}
+.group-progress-track span{display:block;height:100%;background:linear-gradient(90deg,#b78a1d,#e3bd52);border-radius:inherit}
+.group-progress-percent{font-size:clamp(8px,.6vw,10px);color:#596270}
+@media(max-width:760px){
+  .lobby-results{height:auto!important;min-height:100vh;overflow:auto!important}
+  .lobby-shell{height:auto!important;min-height:100vh!important;display:block!important;padding:8px}
+  .lobby-top,.group-progress-panel,.lobby-board{margin-bottom:10px}
+  .lobby-board{display:block!important;overflow:visible!important}
+  .lobby-students{display:block!important;height:auto!important;min-height:0!important;overflow:visible!important}
+  .lobby-row{display:grid!important;height:auto!important;min-height:58px!important}
+  .group-progress-grid{grid-template-columns:1fr 1fr}
+}
+@media(max-width:430px){.group-progress-grid{grid-template-columns:1fr}}

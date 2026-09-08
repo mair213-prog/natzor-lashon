@@ -172,8 +172,10 @@ app.get('/api/public/results',async(req,res)=>{
     const {rows:leaders}=await pool.query(`WITH scores AS (
       SELECT s.id,(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int score
       FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id
-    ) SELECT g.id,g.name,COALESCE(SUM(sc.score),0)::int score FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN scores sc ON sc.id=gs.student_id WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name ORDER BY score DESC,g.name LIMIT 1`,[pid]);
-    res.set('Cache-Control','no-store');res.json({leader:leaders[0]||null,students});
+    ) SELECT g.id,g.name,COALESCE(SUM(sc.score),0)::int score FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN scores sc ON sc.id=gs.student_id WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name ORDER BY score DESC,g.name`,[pid]);
+    const maxScore=Math.max(0,...leaders.map(g=>Number(g.score||0)));
+    const groups=leaders.map((g,i)=>({...g,place:i+1,percent:maxScore>0?Math.max(0,Math.round(Number(g.score||0)/maxScore*100)):0}));
+    res.set('Cache-Control','no-store');res.json({leader:leaders[0]||null,groups,students});
   }catch(e){console.error(e);res.status(500).json({error:'שגיאה בטעינת התוצאות'})}
 });
 
