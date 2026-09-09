@@ -316,3 +316,21 @@
   .campaign-rules-content{font-size:.95rem;line-height:1.65}
   .campaign-rules-editor{min-height:360px}
 }
+
+/* V11.2 — campaign rules design studio */
+.rules-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px;border:1px solid #e1e6ee;border-radius:14px;background:#f8fafc;margin-bottom:10px}
+.editor-tool{width:42px;height:38px;border:1px solid #d5dce7;border-radius:9px;background:#fff;cursor:pointer;font-size:1rem}
+.editor-tool:hover{background:#eef3f8}
+.editor-color{display:flex;align-items:center;gap:6px;font-size:.86rem;font-weight:700}
+.editor-color input{width:38px;height:34px;border:0;background:transparent;padding:0}
+.editor-select{width:auto;min-width:130px}
+.rules-preview-wrap{margin:12px 0;padding-top:10px;border-top:1px dashed #d8dee8}
+.campaign-rules-paper{border-radius:16px;padding:20px;transition:background .15s,color .15s;box-shadow:inset 0 0 0 1px rgba(0,0,0,.05)}
+.campaign-rules-paper .campaign-rules-content p:first-child{color:inherit}
+.campaign-rules-paper .campaign-rules-content strong{font-weight:900}
+.campaign-rules-paper .campaign-rules-sign{color:#c79b31}
+@media(max-width:650px){
+  .rules-toolbar{gap:6px}
+  .editor-select{min-width:115px;flex:1}
+  .campaign-rules-paper{padding:15px}
+}
