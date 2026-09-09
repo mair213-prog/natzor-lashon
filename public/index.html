@@ -3,7 +3,7 @@
 <div class="wrap">
 <section id="login" class="panel"><h2>כניסה לצוות</h2><input id="email" class="input" placeholder="אימייל"><div style="height:7px"></div><input id="password" class="input" type="password" placeholder="סיסמה"><div style="height:9px"></div><button class="btn active" onclick="login()">כניסה</button><div id="loginMsg" class="msg hidden"></div></section>
 <section id="app" class="hidden">
-<div class="panel"><div class="row"><div class="grow"><b id="who"></b><div class="small" id="role"></div></div><button class="btn" onclick="openMySettings()">⚙️ הגדרות</button><button class="btn" onclick="openResults()">🏆 מסך תוצאות</button><button id="installAppBtn" class="btn hidden" onclick="installApp()">📲 התקנת אפליקציה</button><button class="btn" onclick="logout()">יציאה</button></div></div>
+<div class="panel"><div class="row"><div class="grow"><b id="who"></b><div class="small" id="role"></div></div><button class="btn campaign-rules-btn" onclick="openCampaignRules()">📜 כללי המבצע</button><button class="btn" onclick="openMySettings()">⚙️ הגדרות</button><button class="btn" onclick="openResults()">🏆 מסך תוצאות</button><button id="installAppBtn" class="btn hidden" onclick="installApp()">📲 התקנת אפליקציה</button><button class="btn" onclick="logout()">יציאה</button></div></div>
 <div id="leaderCard" class="panel"></div>
 <div class="panel"><div class="tabs"><button id="classTab" class="btn active" onclick="openArea('class')">🏫 לימודים</button><button id="dormTab" class="btn" onclick="openArea('dorm')">🏠 פנימייה</button><button id="adminTab" class="btn hidden" onclick="openAdmin()">🔐 מנהל</button></div></div>
 <div id="reporting"></div><div id="admin" class="hidden"></div>

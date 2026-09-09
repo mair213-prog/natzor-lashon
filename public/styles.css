@@ -302,3 +302,17 @@
   z-index:5;
   white-space:nowrap;
 }
+
+/* V11 — campaign rules */
+.campaign-rules-btn{font-weight:800}
+.campaign-rules-content{direction:rtl;text-align:right;line-height:1.75;font-size:1rem}
+.campaign-rules-content p{margin:0 0 14px}
+.campaign-rules-content p:first-child{font-size:1.18rem;font-weight:900;color:#15233d}
+.campaign-rules-content p:nth-child(3),.campaign-rules-content p:nth-child(5),.campaign-rules-content p:nth-child(7){font-weight:700}
+.campaign-rules-sign{margin-top:18px;padding-top:14px;border-top:1px solid #e5e8ee;text-align:center;font-weight:900;color:#b68a1f}
+.campaign-rules-sign span{padding:0 6px;color:#15233d}
+.campaign-rules-editor{width:100%;min-height:430px;resize:vertical;line-height:1.7;font-family:inherit;margin-bottom:10px}
+@media(max-width:650px){
+  .campaign-rules-content{font-size:.95rem;line-height:1.65}
+  .campaign-rules-editor{min-height:360px}
+}

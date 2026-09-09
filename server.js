@@ -30,12 +30,32 @@ function auth(req,res,next){try{const token=req.cookies.natzor_token;if(!token)r
 function admin(req,res,next){if(req.user?.role!=='admin')return res.status(403).json({error:'admin_only'});next()}
 function cookieOpts(){return {httpOnly:true,sameSite:'strict',secure:process.env.NODE_ENV==='production',maxAge:12*60*60*1000}}
 
+const DEFAULT_CAMPAIGN_RULES = "בישיבת נחלת יעקב בוחרים לדבר נקי.\n\nבמשך חודש שלם אנחנו שמים את הדיבור במרכז, מתחזקים יחד בשפה נקייה ומכבדים זה את זה בכל זמן ובכל מקום.\n\nאיך צוברים נקודות?\nבכל יום מתקיימים שני זמני לימוד קצרים בנושא שמירת הלשון: 10 דקות לפני מנחה בבית המדרש, ו־10 דקות במהלך סדר \"והגית\". המחנך מדווח על הלימוד בצהריים, והמדריך מדווח על הלימוד בערב.\n\nעל כל דיווח חיובי התלמיד מקבל 3 נקודות. ניתן לקבל דיווח חיובי פעם אחת ביום בלימודים ופעם אחת ביום בפנימייה, ולכן כל תלמיד יכול לצבור עד 6 נקודות רגילות ביום. לאחר דיווח חיובי האפשרות ננעלת באותו תחום עד ליום המחרת.\n\nממשיכים לצבור – ומקבלים בונוס:\nעל כל 20 דיווחים חיוביים שנצברו במבצע, התלמיד מקבל בונוס נוסף של 5 נקודות.\n\nשומרים על שפה נקייה:\nכאשר תלמיד אינו שומר על דיבור נקי, כל איש צוות ששמע את הדברים רשאי לבצע דיווח שלילי. כל דיווח שלילי מוריד נקודה אחת, וניתן לבצע דיווח שלילי נוסף לאחר 5 דקות.\n\nהמטרה שלנו היא לא רק לצבור נקודות, אלא ליצור בישיבת נחלת יעקב אווירה של דיבור נקי, מכבד וטוב.\n\nבסיום חודש המבצע, התלמידים שיעמדו ביעד שנקבע יזכו לצאת יחד לטיול שווה.\n\nנצור לשונך – בוחרים לדבר נקי.";
+
 async function ensureV8Schema(){
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_phone TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_email_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_whatsapp_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  await pool.query(`INSERT INTO app_settings(setting_key,setting_value) VALUES('campaign_rules',$1) ON CONFLICT(setting_key) DO NOTHING`,[DEFAULT_CAMPAIGN_RULES]);
   await pool.query(`UPDATE users SET reminder_email_enabled=TRUE,reminder_whatsapp_enabled=FALSE WHERE COALESCE(reminder_email_enabled,FALSE)=FALSE AND COALESCE(reminder_whatsapp_enabled,FALSE)=FALSE`);
 }
+
+app.get('/api/campaign-rules',auth,async(req,res)=>{
+  const {rows}=await pool.query(`SELECT setting_value FROM app_settings WHERE setting_key='campaign_rules'`);
+  res.json({text:rows[0]?.setting_value||DEFAULT_CAMPAIGN_RULES});
+});
+app.put('/api/admin/campaign-rules',auth,admin,async(req,res)=>{
+  const text=String(req.body.text||'').trim();
+  if(!text)return res.status(400).json({error:'תוכן כללי המבצע לא יכול להיות ריק'});
+  if(text.length>12000)return res.status(400).json({error:'תוכן כללי המבצע ארוך מדי'});
+  await pool.query(`INSERT INTO app_settings(setting_key,setting_value,updated_at) VALUES('campaign_rules',$1,NOW()) ON CONFLICT(setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value,updated_at=NOW()`,[text]);
+  res.json({ok:true,text});
+});
 
 async function activePeriodId(client=pool){const {rows}=await client.query('SELECT id FROM score_periods WHERE active=true ORDER BY id DESC LIMIT 1');if(!rows[0])throw new Error('No active score period');return rows[0].id}
 
