@@ -271,3 +271,8 @@
   .collapsible-body{padding:9px}
   .staff-user-card>.row{align-items:stretch}
 }
+
+/* V10.6 student search */
+.student-search-wrap{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.student-search-wrap>span{font-size:1.15rem}
+.student-search-wrap .input{width:100%}

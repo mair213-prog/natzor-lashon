@@ -21,6 +21,10 @@ app.use(express.static(path.join(__dirname,'public')));
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET is required');
+const MANAGEMENT_PASSWORD = process.env.MANAGEMENT_PASSWORD;
+function validManagementPassword(value){
+  return !!MANAGEMENT_PASSWORD && String(value||'')===MANAGEMENT_PASSWORD;
+}
 function signUser(u){return jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role},JWT_SECRET,{expiresIn:'12h'})}
 function auth(req,res,next){try{const token=req.cookies.natzor_token;if(!token)return res.status(401).json({error:'not_authenticated'});req.user=jwt.verify(token,JWT_SECRET);next()}catch{res.status(401).json({error:'not_authenticated'})}}
 function admin(req,res,next){if(req.user?.role!=='admin')return res.status(403).json({error:'admin_only'});next()}
@@ -355,8 +359,29 @@ app.delete('/api/admin/groups/:gid/students/:sid',auth,admin,async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
 });
 
-app.post('/api/admin/users',auth,admin,async(req,res)=>{const name=String(req.body.name||'').trim(),email=String(req.body.email||'').trim().toLowerCase(),phone=String(req.body.whatsapp_phone||'').trim(),password=String(req.body.password||''),role=req.body.role;if(!name||!email||password.length<8||!['admin','study','dorm'].includes(role))return res.status(400).json({error:'יש למלא שם, אימייל, תפקיד וסיסמה של 8 תווים לפחות'});const hash=await bcrypt.hash(password,12);const {rows}=await pool.query('INSERT INTO users(name,email,whatsapp_phone,password_hash,role) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,whatsapp_phone,role,active',[name,email,phone||null,hash,role]);res.json(rows[0])});
-app.put('/api/admin/users/:id',auth,admin,async(req,res)=>{const id=Number(req.params.id),name=String(req.body.name||'').trim(),role=req.body.role,active=!!req.body.active;const {rows}=await pool.query('UPDATE users SET name=$1,role=$2,active=$3 WHERE id=$4 RETURNING id,name,email,role,active',[name,role,active,id]);res.json(rows[0])});
+app.post('/api/admin/users',auth,admin,async(req,res)=>{
+  const name=String(req.body.name||'').trim(),email=String(req.body.email||'').trim().toLowerCase(),phone=String(req.body.whatsapp_phone||'').trim(),password=String(req.body.password||''),role=req.body.role;
+  if(!name||!email||password.length<8||!['admin','study','dorm'].includes(role))return res.status(400).json({error:'יש למלא שם, אימייל, תפקיד וסיסמה של 8 תווים לפחות'});
+  if(role==='admin'){
+    if(!MANAGEMENT_PASSWORD)return res.status(500).json({error:'סיסמת ניהול ראשית עדיין לא הוגדרה בשרת'});
+    if(!validManagementPassword(req.body.management_password))return res.status(403).json({error:'סיסמת הניהול הראשית שגויה'});
+  }
+  const hash=await bcrypt.hash(password,12);
+  const {rows}=await pool.query('INSERT INTO users(name,email,whatsapp_phone,password_hash,role) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,whatsapp_phone,role,active',[name,email,phone||null,hash,role]);
+  res.json(rows[0]);
+});
+app.put('/api/admin/users/:id',auth,admin,async(req,res)=>{
+  const id=Number(req.params.id),name=String(req.body.name||'').trim(),role=req.body.role,active=!!req.body.active;
+  if(!['admin','study','dorm'].includes(role))return res.status(400).json({error:'תפקיד לא תקין'});
+  const {rows:existing}=await pool.query('SELECT role FROM users WHERE id=$1',[id]);
+  if(!existing[0])return res.status(404).json({error:'משתמש לא נמצא'});
+  if(role==='admin'&&existing[0].role!=='admin'){
+    if(!MANAGEMENT_PASSWORD)return res.status(500).json({error:'סיסמת ניהול ראשית עדיין לא הוגדרה בשרת'});
+    if(!validManagementPassword(req.body.management_password))return res.status(403).json({error:'סיסמת הניהול הראשית שגויה'});
+  }
+  const {rows}=await pool.query('UPDATE users SET name=$1,role=$2,active=$3 WHERE id=$4 RETURNING id,name,email,role,active',[name,role,active,id]);
+  res.json(rows[0]);
+});
 app.put('/api/admin/users/:id/email',auth,admin,async(req,res)=>{const id=Number(req.params.id),email=String(req.body.email||'').trim().toLowerCase();if(!email)return res.status(400).json({error:'email_required'});const {rows}=await pool.query('UPDATE users SET email=$1 WHERE id=$2 RETURNING id,name,email,role,active',[email,id]);res.json(rows[0])});
 app.put('/api/admin/users/:id/whatsapp',auth,admin,async(req,res)=>{const id=Number(req.params.id),phone=String(req.body.phone||'').replace(/[^0-9+]/g,'');const {rows}=await pool.query('UPDATE users SET whatsapp_phone=$1 WHERE id=$2 RETURNING id,whatsapp_phone',[phone||null,id]);res.json(rows[0])});
 app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{
