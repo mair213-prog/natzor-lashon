@@ -276,3 +276,12 @@
 .student-search-wrap{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .student-search-wrap>span{font-size:1.15rem}
 .student-search-wrap .input{width:100%}
+
+/* V10.7 — collapsed class rankings in data view */
+.data-class-list{display:grid;gap:9px}
+.data-class-collapse{margin-top:0}
+.data-class-collapse.leading-group{border:2px solid #d7aa2e;box-shadow:0 0 0 2px rgba(215,170,46,.10)}
+.data-class-collapse.leading-group>summary{background:linear-gradient(90deg,#fff8dc,#fffdf5)}
+.data-class-collapse .goal-bar{margin:4px 0 10px}
+.data-class-students .ranking-row{padding:8px 4px;border-bottom:1px solid #edf0f4}
+.data-class-students .ranking-row:last-child{border-bottom:0}
