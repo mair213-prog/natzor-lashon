@@ -242,3 +242,32 @@
 .report-result-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 8px;border-bottom:1px solid #edf0f4}
 .report-more{text-align:center;padding-top:12px}.empty-state{text-align:center;padding:24px;color:#6b7280}
 @media(max-width:650px){.report-filters{grid-template-columns:1fr}.modal-card{padding:12px}.report-result-row{align-items:flex-start}.settings-choice{display:grid;grid-template-columns:1fr 1fr}.settings-choice .time-input,.settings-choice .btn{grid-column:1/-1}}
+
+/* V10.4 — compact administration */
+.admin-collapsible{border:1px solid #e2e6ed;border-radius:15px;background:#fff;margin-top:10px;overflow:hidden}
+.admin-collapsible>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:13px 14px;background:#f8fafc;user-select:none}
+.admin-collapsible>summary::-webkit-details-marker{display:none}
+.admin-collapsible>summary:hover{background:#f1f5f9}
+.admin-collapsible[open]>summary{border-bottom:1px solid #e5e9ef;background:#f4f7fb}
+.admin-collapsible summary small{display:block;color:#6b7280;font-size:.78rem;margin-top:2px}
+.summary-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#eef2f7;font-size:1.1rem;flex:0 0 auto}
+.summary-arrow{font-size:1.2rem;transition:transform .18s ease}
+.admin-collapsible[open] .summary-arrow{transform:rotate(180deg)}
+.collapsible-body{padding:12px}
+.student-admin-row,.group-member-row{padding:6px 0;border-bottom:1px solid #eef1f5}
+.student-admin-row:last-child,.group-member-row:last-child{border-bottom:0}
+.group-admin-list{margin-top:10px}
+.admin-subtitle{font-weight:800;margin:12px 0 5px}
+.add-member-row{margin-top:10px}
+.empty-admin-list{padding:14px;text-align:center;color:#7a8493}
+.staff-search-wrap{display:flex;align-items:center;gap:8px;margin:14px 0 8px}
+.staff-search-wrap>span{font-size:1.2rem}
+.staff-categories{display:grid;gap:8px}
+.staff-category.staff-no-match{display:none}
+.staff-user-card{margin:10px 0}
+.staff-create-grid{margin-bottom:8px}
+@media(max-width:650px){
+  .admin-collapsible>summary{padding:11px}
+  .collapsible-body{padding:9px}
+  .staff-user-card>.row{align-items:stretch}
+}
