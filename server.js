@@ -48,28 +48,66 @@ async function ensureV8Schema(){
     ('campaign_rules_font','system'),
     ('campaign_rules_size','medium')
     ON CONFLICT(setting_key) DO NOTHING`);
+  await pool.query(`INSERT INTO app_settings(setting_key,setting_value) VALUES('campaign_rules_html','') ON CONFLICT(setting_key) DO NOTHING`);
   await pool.query(`UPDATE users SET reminder_email_enabled=TRUE,reminder_whatsapp_enabled=FALSE WHERE COALESCE(reminder_email_enabled,FALSE)=FALSE AND COALESCE(reminder_whatsapp_enabled,FALSE)=FALSE`);
 }
 
+function sanitizeCampaignHtml(input){
+  let h=String(input||'');
+  h=h.replace(/<\s*(script|style|iframe|object|embed|link|meta|form)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi,'');
+  h=h.replace(/<\s*(script|style|iframe|object|embed|link|meta|form)[^>]*\/?>/gi,'');
+  h=h.replace(/\son\w+\s*=\s*(['"]).*?\1/gi,'');
+  h=h.replace(/\son\w+\s*=\s*[^\s>]+/gi,'');
+  h=h.replace(/javascript\s*:/gi,'');
+  return h.slice(0,40000);
+}
 app.get('/api/campaign-rules',auth,async(req,res)=>{
-  const {rows}=await pool.query(`SELECT setting_key,setting_value FROM app_settings WHERE setting_key = ANY($1)`,[['campaign_rules','campaign_rules_bg','campaign_rules_text','campaign_rules_font','campaign_rules_size']]);
+  const {rows}=await pool.query(`SELECT setting_key,setting_value FROM app_settings WHERE setting_key = ANY($1)`,[['campaign_rules','campaign_rules_html','campaign_rules_bg','campaign_rules_text','campaign_rules_font','campaign_rules_size']]);
   const s=Object.fromEntries(rows.map(r=>[r.setting_key,r.setting_value]));
-  res.json({text:s.campaign_rules||DEFAULT_CAMPAIGN_RULES,style:{background:s.campaign_rules_bg||'#ffffff',textColor:s.campaign_rules_text||'#17233b',font:s.campaign_rules_font||'system',size:s.campaign_rules_size||'medium'}});
+  res.json({
+    text:s.campaign_rules||DEFAULT_CAMPAIGN_RULES,
+    html:s.campaign_rules_html||'',
+    style:{
+      background:s.campaign_rules_bg||'#ffffff',
+      textColor:s.campaign_rules_text||'#17233b',
+      font:s.campaign_rules_font||'system',
+      size:s.campaign_rules_size||'medium'
+    }
+  });
 });
 app.put('/api/admin/campaign-rules',auth,admin,async(req,res)=>{
   const text=String(req.body.text||'').trim();
+  const html=sanitizeCampaignHtml(req.body.html||'');
   const style=req.body.style||{};
   const colorOk=v=>/^#[0-9a-fA-F]{6}$/.test(String(v||''));
   const bg=colorOk(style.background)?style.background:'#ffffff';
   const textColor=colorOk(style.textColor)?style.textColor:'#17233b';
   const font=['system','serif','rounded','traditional'].includes(style.font)?style.font:'system';
   const size=['small','medium','large'].includes(style.size)?style.size:'medium';
-  if(!text)return res.status(400).json({error:'תוכן כללי המבצע לא יכול להיות ריק'});
+  if(!text&&!html)return res.status(400).json({error:'תוכן כללי המבצע לא יכול להיות ריק'});
   if(text.length>12000)return res.status(400).json({error:'תוכן כללי המבצע ארוך מדי'});
-  const values=[['campaign_rules',text],['campaign_rules_bg',bg],['campaign_rules_text',textColor],['campaign_rules_font',font],['campaign_rules_size',size]];
+  const values=[
+    ['campaign_rules',text],
+    ['campaign_rules_html',html],
+    ['campaign_rules_bg',bg],
+    ['campaign_rules_text',textColor],
+    ['campaign_rules_font',font],
+    ['campaign_rules_size',size]
+  ];
   const client=await pool.connect();
-  try{await client.query('BEGIN');for(const [k,v] of values)await client.query(`INSERT INTO app_settings(setting_key,setting_value,updated_at) VALUES($1,$2,NOW()) ON CONFLICT(setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value,updated_at=NOW()`,[k,v]);await client.query('COMMIT')}catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
-  res.json({ok:true,text,style:{background:bg,textColor,font,size}});
+  try{
+    await client.query('BEGIN');
+    for(const [k,v] of values){
+      await client.query(`INSERT INTO app_settings(setting_key,setting_value,updated_at) VALUES($1,$2,NOW()) ON CONFLICT(setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value,updated_at=NOW()`,[k,v]);
+    }
+    await client.query('COMMIT');
+  }catch(e){
+    await client.query('ROLLBACK');
+    throw e;
+  }finally{
+    client.release();
+  }
+  res.json({ok:true,text,html,style:{background:bg,textColor,font,size}});
 });
 
 async function activePeriodId(client=pool){const {rows}=await client.query('SELECT id FROM score_periods WHERE active=true ORDER BY id DESC LIMIT 1');if(!rows[0])throw new Error('No active score period');return rows[0].id}

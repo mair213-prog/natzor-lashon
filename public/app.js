@@ -75,14 +75,109 @@ function adminManageView(){return `<div class="panel manage-switch"><h2>ניהו
 function setManageSection(s){playSound('nav');adminManageSection=s;renderAdminContent();if(s==='rules')loadCampaignRulesEditor()}
 function campaignRulesHtml(text){return esc(text||'').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('')}
 function campaignRulesStyle(s={}){const fonts={system:'Arial,Helvetica,sans-serif',serif:'Georgia,"Times New Roman",serif',rounded:'"Arial Rounded MT Bold",Arial,sans-serif',traditional:'"Noto Serif Hebrew","Times New Roman",serif'};const sizes={small:'.92rem',medium:'1rem',large:'1.14rem'};return `background:${s.background||'#ffffff'};color:${s.textColor||'#17233b'};font-family:${fonts[s.font]||fonts.system};font-size:${sizes[s.size]||sizes.medium}`}
-async function openCampaignRules(){playSound('nav');try{const d=await api('/api/campaign-rules');modalShell('campaignRulesModal','📜 כללי המבצע',`<div class="campaign-rules-paper" style="${campaignRulesStyle(d.style)}"><div class="campaign-rules-content">${campaignRulesHtml(d.text)}</div><div class="campaign-rules-sign">נצור לשונך <span>·</span> בוחרים לדבר נקי</div></div>`)}catch(e){alert(e.message)}}
-function adminRulesEditor(){return `<div class="panel"><h2>📜 עריכת כללי המבצע</h2><div class="small" style="margin-bottom:10px">כאן אפשר לערוך את התוכן ואת העיצוב של המודעה. כדי להבליט מילים, סמן אותן ולחץ על <b>B</b>.</div><div class="rules-toolbar"><button class="editor-tool" type="button" onclick="wrapRulesSelection('**','**')" title="הדגשה"><b>B</b></button><button class="editor-tool" type="button" onclick="insertRulesText('\\n\\n')" title="פסקה חדשה">¶</button><label class="editor-color">רקע <input id="rulesBg" type="color" value="#ffffff" oninput="previewCampaignRules()"></label><label class="editor-color">טקסט <input id="rulesTextColor" type="color" value="#17233b" oninput="previewCampaignRules()"></label><select id="rulesFont" class="input editor-select" onchange="previewCampaignRules()"><option value="system">פונט נקי</option><option value="serif">פונט קלאסי</option><option value="rounded">פונט מודגש</option><option value="traditional">פונט מסורתי</option></select><select id="rulesSize" class="input editor-select" onchange="previewCampaignRules()"><option value="small">טקסט קטן</option><option value="medium" selected>טקסט רגיל</option><option value="large">טקסט גדול</option></select></div><textarea id="campaignRulesEditor" class="input campaign-rules-editor" placeholder="טוען את כללי המבצע..." oninput="previewCampaignRules()"></textarea><div class="rules-preview-wrap"><div class="small"><b>תצוגה מקדימה</b></div><div id="campaignRulesPreview" class="campaign-rules-paper"></div></div><div class="row"><button class="btn ok" onclick="saveCampaignRules()">💾 שמור כללי מבצע</button><button class="btn" onclick="loadCampaignRulesEditor()">↻ טען מחדש</button></div></div>`}
-function rulesEditorStyle(){return {background:$('rulesBg')?.value||'#ffffff',textColor:$('rulesTextColor')?.value||'#17233b',font:$('rulesFont')?.value||'system',size:$('rulesSize')?.value||'medium'}}
-function previewCampaignRules(){const p=$('campaignRulesPreview'),el=$('campaignRulesEditor');if(!p||!el)return;p.setAttribute('style',campaignRulesStyle(rulesEditorStyle()));p.innerHTML=`<div class="campaign-rules-content">${campaignRulesHtml(el.value)}</div>`}
-function wrapRulesSelection(before,after){const el=$('campaignRulesEditor');if(!el)return;const s=el.selectionStart,e=el.selectionEnd,selected=el.value.slice(s,e);el.setRangeText(before+selected+after,s,e,'select');el.focus();previewCampaignRules()}
-function insertRulesText(text){const el=$('campaignRulesEditor');if(!el)return;const p=el.selectionStart;el.setRangeText(text,p,p,'end');el.focus();previewCampaignRules()}
-async function loadCampaignRulesEditor(){const el=$('campaignRulesEditor');if(!el)return;try{const d=await api('/api/campaign-rules');el.value=d.text||'';$('rulesBg').value=d.style?.background||'#ffffff';$('rulesTextColor').value=d.style?.textColor||'#17233b';$('rulesFont').value=d.style?.font||'system';$('rulesSize').value=d.style?.size||'medium';previewCampaignRules()}catch(e){el.value='';alert(e.message)}}
-async function saveCampaignRules(){const el=$('campaignRulesEditor');if(!el)return;const text=el.value.trim();if(!text)return alert('כללי המבצע לא יכולים להיות ריקים');try{await api('/api/admin/campaign-rules',{method:'PUT',body:JSON.stringify({text,style:rulesEditorStyle()})});alert('כללי המבצע והעיצוב נשמרו בהצלחה')}catch(e){alert(e.message)}}
+function rulesPlainToHtml(text){return campaignRulesHtml(text)}
+function rulesEditorHtml(d){return (d.html&&d.html.trim())?d.html:rulesPlainToHtml(d.text||'')}
+function cleanRulesHtml(html){
+  const box=document.createElement('div');box.innerHTML=html||'';
+  const allowed=new Set(['DIV','P','BR','B','STRONG','I','EM','U','S','UL','OL','LI','SPAN']);
+  const allowedStyles=new Set(['color','background-color','font-family','font-size','text-align','font-weight','font-style','text-decoration']);
+  function walk(node){
+    [...node.children].forEach(el=>{
+      if(!allowed.has(el.tagName)){el.replaceWith(...el.childNodes);return}
+      [...el.attributes].forEach(a=>{
+        if(a.name!=='style')el.removeAttribute(a.name)
+      });
+      if(el.hasAttribute('style')){
+        const safe=[];
+        for(const prop of allowedStyles){
+          const v=el.style.getPropertyValue(prop);
+          if(v&&!/url\s*\(|expression\s*\(|javascript\s*:/i.test(v))safe.push(`${prop}:${v}`)
+        }
+        if(safe.length)el.setAttribute('style',safe.join(';'));else el.removeAttribute('style');
+      }
+      walk(el);
+    })
+  }
+  walk(box);return box.innerHTML;
+}
+function rulesExec(cmd,value=null){const ed=$('campaignRulesEditor');if(!ed)return;ed.focus();document.execCommand(cmd,false,value);previewCampaignRules()}
+function rulesApplyFont(){const v=$('rulesFontFamily')?.value;if(v)rulesExec('fontName',v)}
+function rulesApplySize(){const v=$('rulesFontSize')?.value;if(v)rulesExec('fontSize',v)}
+function rulesApplyColor(){const v=$('rulesSelectionColor')?.value;if(v)rulesExec('foreColor',v)}
+function rulesApplyHighlight(){const v=$('rulesHighlight')?.value;if(v)rulesExec('hiliteColor',v)}
+function rulesClearFormatting(){rulesExec('removeFormat')}
+function rulesInsertLink(){
+  const url=prompt('הדבק כתובת קישור:');
+  if(!url)return;
+  if(!/^https?:\/\//i.test(url))return alert('יש להזין קישור שמתחיל ב-http:// או https://');
+  rulesExec('createLink',url);
+}
+async function openCampaignRules(){playSound('nav');try{const d=await api('/api/campaign-rules');const body=(d.html&&d.html.trim())?d.html:campaignRulesHtml(d.text);modalShell('campaignRulesModal','📜 כללי המבצע',`<div class="campaign-rules-paper" style="${campaignRulesStyle(d.style)}"><div class="campaign-rules-content">${body}</div><div class="campaign-rules-sign">נצור לשונך <span>·</span> בוחרים לדבר נקי</div></div>`)}catch(e){alert(e.message)}}
+function adminRulesEditor(){return `<div class="panel"><h2>📜 עריכת כללי המבצע</h2><div class="small" style="margin-bottom:10px">עורך מתקדם: אפשר לסמן מילה, משפט או פסקה ולשנות רק אותם — כמו ב־Word.</div>
+<div class="word-toolbar">
+  <div class="toolbar-group">
+    <button class="editor-tool" type="button" onclick="rulesExec('bold')" title="מודגש"><b>B</b></button>
+    <button class="editor-tool" type="button" onclick="rulesExec('italic')" title="נטוי"><i>I</i></button>
+    <button class="editor-tool" type="button" onclick="rulesExec('underline')" title="קו תחתון"><u>U</u></button>
+    <button class="editor-tool" type="button" onclick="rulesExec('strikeThrough')" title="קו חוצה"><s>S</s></button>
+  </div>
+  <div class="toolbar-group">
+    <select id="rulesFontFamily" class="input editor-select font-select" onchange="rulesApplyFont()">
+      <option value="">בחירת פונט</option>
+      <option value="Arial">Arial</option>
+      <option value="Calibri">Calibri</option>
+      <option value="Aptos">Aptos</option>
+      <option value="Times New Roman">Times New Roman</option>
+      <option value="Georgia">Georgia</option>
+      <option value="Tahoma">Tahoma</option>
+      <option value="Verdana">Verdana</option>
+      <option value="Trebuchet MS">Trebuchet MS</option>
+      <option value="Courier New">Courier New</option>
+      <option value="David">David</option>
+      <option value="FrankRuehl">FrankRuehl</option>
+      <option value="Narkisim">Narkisim</option>
+      <option value="Guttman Yad">Guttman Yad</option>
+    </select>
+    <select id="rulesFontSize" class="input editor-select size-select" onchange="rulesApplySize()">
+      <option value="">גודל</option>
+      <option value="1">קטן מאוד</option>
+      <option value="2">קטן</option>
+      <option value="3">רגיל</option>
+      <option value="4">גדול</option>
+      <option value="5">גדול מאוד</option>
+      <option value="6">כותרת</option>
+      <option value="7">ענק</option>
+    </select>
+  </div>
+  <div class="toolbar-group">
+    <label class="editor-color">צבע אות <input id="rulesSelectionColor" type="color" value="#17233b" oninput="rulesApplyColor()"></label>
+    <label class="editor-color">הדגשה <input id="rulesHighlight" type="color" value="#fff2a8" oninput="rulesApplyHighlight()"></label>
+  </div>
+  <div class="toolbar-group">
+    <button class="editor-tool" type="button" onclick="rulesExec('justifyRight')" title="יישור לימין">⇥</button>
+    <button class="editor-tool" type="button" onclick="rulesExec('justifyCenter')" title="מרכז">≡</button>
+    <button class="editor-tool" type="button" onclick="rulesExec('justifyLeft')" title="יישור לשמאל">⇤</button>
+    <button class="editor-tool" type="button" onclick="rulesExec('insertUnorderedList')" title="רשימת תבליטים">•</button>
+    <button class="editor-tool" type="button" onclick="rulesExec('insertOrderedList')" title="רשימה ממוספרת">1.</button>
+  </div>
+  <div class="toolbar-group">
+    <button class="editor-tool" type="button" onclick="rulesExec('undo')" title="בטל">↶</button>
+    <button class="editor-tool" type="button" onclick="rulesExec('redo')" title="בצע שוב">↷</button>
+    <button class="editor-tool" type="button" onclick="rulesClearFormatting()" title="נקה עיצוב">Tx</button>
+    <button class="editor-tool" type="button" onclick="rulesInsertLink()" title="הוסף קישור">🔗</button>
+  </div>
+</div>
+<div class="rules-page-controls">
+  <label class="editor-color">צבע רקע המודעה <input id="rulesBg" type="color" value="#ffffff" oninput="previewCampaignRules()"></label>
+  <label class="editor-color">צבע ברירת מחדל <input id="rulesTextColor" type="color" value="#17233b" oninput="previewCampaignRules()"></label>
+</div>
+<div id="campaignRulesEditor" class="campaign-rich-editor" contenteditable="true" dir="rtl" oninput="previewCampaignRules()"></div>
+<div class="rules-preview-wrap"><div class="small"><b>תצוגה מקדימה</b></div><div id="campaignRulesPreview" class="campaign-rules-paper"></div></div>
+<div class="row"><button class="btn ok" onclick="saveCampaignRules()">💾 שמור כללי מבצע</button><button class="btn" onclick="loadCampaignRulesEditor()">↻ טען מחדש</button></div></div>`}
+function rulesEditorStyle(){return {background:$('rulesBg')?.value||'#ffffff',textColor:$('rulesTextColor')?.value||'#17233b',font:'system',size:'medium'}}
+function previewCampaignRules(){const p=$('campaignRulesPreview'),ed=$('campaignRulesEditor');if(!p||!ed)return;p.setAttribute('style',campaignRulesStyle(rulesEditorStyle()));p.innerHTML=`<div class="campaign-rules-content">${cleanRulesHtml(ed.innerHTML)}</div>`}
+async function loadCampaignRulesEditor(){const ed=$('campaignRulesEditor');if(!ed)return;try{const d=await api('/api/campaign-rules');ed.innerHTML=rulesEditorHtml(d);$('rulesBg').value=d.style?.background||'#ffffff';$('rulesTextColor').value=d.style?.textColor||'#17233b';previewCampaignRules()}catch(e){ed.innerHTML='';alert(e.message)}}
+async function saveCampaignRules(){const ed=$('campaignRulesEditor');if(!ed)return;const html=cleanRulesHtml(ed.innerHTML).trim();const text=(ed.innerText||'').trim();if(!text)return alert('כללי המבצע לא יכולים להיות ריקים');try{await api('/api/admin/campaign-rules',{method:'PUT',body:JSON.stringify({text,html,style:rulesEditorStyle()})});alert('כללי המבצע והעיצוב נשמרו בהצלחה')}catch(e){alert(e.message)}}
 
 function adminPeriodsView(){return `<div class="panel"><h2>🔄 תקופות ניקוד</h2><div class="small">פתיחת תקופה חדשה מאפסת את הניקוד המוצג, אבל שומרת את כל הדיווחים וההיסטוריה מהתקופות הקודמות.</div><div class="row"><input id="newPeriodName" class="input grow" placeholder="למשל: חודש חשוון / מחצית א׳"><button class="btn ok" onclick="startNewPeriod()">פתח תקופה חדשה</button></div><div class="period-list">${adminPeriods.slice(0,8).map(p=>`<div class="row"><span class="grow">${p.active?'🟢':'⚪'} ${esc(p.name)}</span><span class="small">${new Date(p.started_at).toLocaleDateString('he-IL')}</span></div>`).join('')}</div></div>`}
 function adminStudents(students){return `<div class="panel"><h2>תלמידים</h2><div class="small" style="margin-bottom:10px">כל תלמיד הוא משותף אוטומטית ללימודים ולפנימייה. את השיוך לקבוצה עושים פעם אחת בלבד.</div><div class="row"><input id="newStudent" class="input grow" placeholder="שם תלמיד"><button class="btn ok" onclick="addStudent()">+ הוסף</button></div><details class="admin-collapsible students-list-box"><summary><span class="summary-icon">👥</span><span class="grow"><b>רשימת תלמידים</b><small>${students.length} תלמידים</small></span><span class="summary-arrow">⌄</span></summary><div class="collapsible-body"><div class="student-search-wrap"><span>🔎</span><input id="studentAdminSearch" class="input" placeholder="חיפוש תלמיד לפי שם" oninput="filterAdminStudents(this.value)"></div><div id="adminStudentsList">${students.map(s=>`<div class="row student-admin-row" data-student-name="${escAttr(String(s.name||'').toLowerCase())}"><input class="input grow" value="${escAttr(s.name)}" onchange="renameStudent(${s.id},this.value)"><button class="btn danger" onclick="deleteStudent(${s.id})">מחיקה</button></div>`).join('')||'<div class="small empty-admin-list">אין תלמידים</div>'}</div><div id="studentSearchEmpty" class="small empty-admin-list hidden">לא נמצאו תלמידים בשם הזה</div></div></details></div>`}
