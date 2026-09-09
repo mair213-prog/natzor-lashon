@@ -34,7 +34,6 @@ async function ensureV8Schema(){
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_phone TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_email_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_whatsapp_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
-  await pool.query(`UPDATE users SET reminder_enabled=TRUE WHERE reminder_enabled IS DISTINCT FROM TRUE`);
   await pool.query(`UPDATE users SET reminder_email_enabled=TRUE,reminder_whatsapp_enabled=FALSE WHERE COALESCE(reminder_email_enabled,FALSE)=FALSE AND COALESCE(reminder_whatsapp_enabled,FALSE)=FALSE`);
 }
 
@@ -386,14 +385,16 @@ app.put('/api/admin/users/:id/email',auth,admin,async(req,res)=>{const id=Number
 app.put('/api/admin/users/:id/whatsapp',auth,admin,async(req,res)=>{const id=Number(req.params.id),phone=String(req.body.phone||'').replace(/[^0-9+]/g,'');const {rows}=await pool.query('UPDATE users SET whatsapp_phone=$1 WHERE id=$2 RETURNING id,whatsapp_phone',[phone||null,id]);res.json(rows[0])});
 app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{
   const id=Number(req.params.id),time=String(req.body.time||'').trim();
+  const enabled=req.body.enabled!==false;
   const emailEnabled=!!req.body.email_enabled,whatsappEnabled=!!req.body.whatsapp_enabled;
-  if(emailEnabled===whatsappEnabled)return res.status(400).json({error:'חובה לבחור דרך תזכורת אחת: אימייל או WhatsApp'});
-  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
+  if(enabled&&emailEnabled===whatsappEnabled)return res.status(400).json({error:'כאשר התזכורת פעילה חובה לבחור דרך אחת: אימייל או WhatsApp'});
+  if(enabled&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
   const {rows:check}=await pool.query('SELECT email,whatsapp_phone FROM users WHERE id=$1',[id]);
   if(!check[0])return res.status(404).json({error:'משתמש לא נמצא'});
-  if(emailEnabled&&!check[0].email)return res.status(400).json({error:'למשתמש אין כתובת אימייל'});
-  if(whatsappEnabled&&!check[0].whatsapp_phone)return res.status(400).json({error:'למשתמש אין מספר WhatsApp'});
-  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=TRUE,reminder_email_enabled=$1,reminder_whatsapp_enabled=$2,reminder_time=$3,reminder_timezone='Asia/Jerusalem' WHERE id=$4 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[emailEnabled,whatsappEnabled,time,id]);
+  if(enabled&&emailEnabled&&!check[0].email)return res.status(400).json({error:'למשתמש אין כתובת אימייל'});
+  if(enabled&&whatsappEnabled&&!check[0].whatsapp_phone)return res.status(400).json({error:'למשתמש אין מספר WhatsApp'});
+  const safeTime=/^([01]\d|2[0-3]):[0-5]\d$/.test(time)?time:'20:00';
+  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=$1,reminder_email_enabled=$2,reminder_whatsapp_enabled=$3,reminder_time=$4,reminder_timezone='Asia/Jerusalem' WHERE id=$5 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[enabled,enabled&&emailEnabled,enabled&&whatsappEnabled,safeTime,id]);
   res.json(rows[0]);
 });
 
