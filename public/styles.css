@@ -285,3 +285,20 @@
 .data-class-collapse .goal-bar{margin:4px 0 10px}
 .data-class-students .ranking-row{padding:8px 4px;border-bottom:1px solid #edf0f4}
 .data-class-students .ranking-row:last-child{border-bottom:0}
+
+/* V10.8 — prevent leading badge from being clipped */
+.data-class-collapse.leading-group{
+  overflow:visible;
+  position:relative;
+}
+.data-class-collapse.leading-group>summary{
+  border-radius:13px;
+  overflow:visible;
+}
+.data-class-collapse.leading-group[open]>summary{
+  border-radius:13px 13px 0 0;
+}
+.data-class-collapse.leading-group::before{
+  z-index:5;
+  white-space:nowrap;
+}
