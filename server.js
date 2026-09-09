@@ -30,6 +30,8 @@ async function ensureV8Schema(){
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_phone TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_email_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_whatsapp_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`UPDATE users SET reminder_enabled=TRUE WHERE reminder_enabled IS DISTINCT FROM TRUE`);
+  await pool.query(`UPDATE users SET reminder_email_enabled=TRUE,reminder_whatsapp_enabled=FALSE WHERE COALESCE(reminder_email_enabled,FALSE)=FALSE AND COALESCE(reminder_whatsapp_enabled,FALSE)=FALSE`);
 }
 
 async function activePeriodId(client=pool){const {rows}=await client.query('SELECT id FROM score_periods WHERE active=true ORDER BY id DESC LIMIT 1');if(!rows[0])throw new Error('No active score period');return rows[0].id}
@@ -79,7 +81,33 @@ app.post('/api/auth/login',async(req,res)=>{
   const u=rows[0];res.cookie('natzor_token',signUser(u),cookieOpts()).json({id:u.id,name:u.name,email:u.email,role:u.role});
 });
 app.post('/api/auth/logout',(req,res)=>res.clearCookie('natzor_token',cookieOpts()).json({ok:true}));
-app.get('/api/me',auth,(req,res)=>res.json(req.user));
+app.get('/api/me',auth,async(req,res)=>{
+  const {rows}=await pool.query(`SELECT id,name,email,whatsapp_phone,role,active,reminder_time,reminder_timezone,reminder_email_enabled,reminder_whatsapp_enabled FROM users WHERE id=$1`,[req.user.id]);
+  if(!rows[0])return res.status(404).json({error:'משתמש לא נמצא'});
+  res.json(rows[0]);
+});
+
+app.put('/api/me/password',auth,async(req,res)=>{
+  const current=String(req.body.current_password||''),next=String(req.body.new_password||'');
+  if(next.length<8)return res.status(400).json({error:'הסיסמה החדשה חייבת להכיל לפחות 8 תווים'});
+  const {rows}=await pool.query('SELECT password_hash FROM users WHERE id=$1',[req.user.id]);
+  if(!rows[0]||!(await bcrypt.compare(current,rows[0].password_hash)))return res.status(400).json({error:'הסיסמה הנוכחית אינה נכונה'});
+  const hash=await bcrypt.hash(next,12);
+  await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2',[hash,req.user.id]);
+  res.json({ok:true});
+});
+
+app.put('/api/me/reminder',auth,async(req,res)=>{
+  const channel=String(req.body.channel||''),time=String(req.body.time||'').trim();
+  if(!['email','whatsapp'].includes(channel))return res.status(400).json({error:'חובה לבחור אימייל או WhatsApp'});
+  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
+  const {rows:users}=await pool.query('SELECT email,whatsapp_phone FROM users WHERE id=$1',[req.user.id]);
+  const u=users[0];if(!u)return res.status(404).json({error:'משתמש לא נמצא'});
+  if(channel==='email'&&!u.email)return res.status(400).json({error:'לא מוגדרת כתובת אימייל'});
+  if(channel==='whatsapp'&&!u.whatsapp_phone)return res.status(400).json({error:'לא מוגדר מספר WhatsApp. פנה למנהל לעדכון המספר'});
+  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=TRUE,reminder_email_enabled=$1,reminder_whatsapp_enabled=$2,reminder_time=$3,reminder_timezone='Asia/Jerusalem' WHERE id=$4 RETURNING reminder_time,reminder_email_enabled,reminder_whatsapp_enabled`,[channel==='email',channel==='whatsapp',time,req.user.id]);
+  res.json(rows[0]);
+});
 
 app.get('/api/leaderboard',auth,async(req,res)=>{
   const {rows}=await pool.query(`
@@ -188,6 +216,26 @@ app.get('/api/admin/dashboard',auth,admin,async(req,res)=>{
     pool.query('SELECT * FROM score_periods WHERE active=true ORDER BY id DESC LIMIT 1')
   ]);
   res.json({students:students.rows,users:users.rows,reports:reports.rows,summary:summary.rows[0],period:period.rows[0]||null});
+});
+
+
+app.get('/api/admin/reports',auth,admin,async(req,res)=>{
+  const student=String(req.query.student||'').trim(),reporter=String(req.query.reporter||'').trim();
+  const date=String(req.query.date||'').trim(),type=String(req.query.type||'').trim(),area=String(req.query.area||'').trim();
+  const limit=Math.min(100,Math.max(1,Number(req.query.limit)||50)),offset=Math.max(0,Number(req.query.offset)||0);
+  const where=[`r.period_id=(SELECT id FROM score_periods WHERE active=true ORDER BY id DESC LIMIT 1)`],vals=[];
+  const add=(sql,v)=>{vals.push(v);where.push(sql.replace('?',`$${vals.length}`))};
+  if(student)add(`s.name ILIKE ?`,'%'+student+'%');
+  if(reporter)add(`u.name ILIKE ?`,'%'+reporter+'%');
+  if(date&&/^\d{4}-\d{2}-\d{2}$/.test(date)){add(`(r.created_at AT TIME ZONE 'Asia/Jerusalem')::date = ?::date`,date)}
+  if(['plus','minus'].includes(type))add(`r.report_type = ?`,type);
+  if(['class','dorm'].includes(area))add(`r.area = ?`,area);
+  const base=`FROM reports r JOIN students s ON s.id=r.student_id JOIN users u ON u.id=r.reporter_id WHERE ${where.join(' AND ')}`;
+  const countVals=[...vals];
+  const {rows:summary}=await pool.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE r.report_type='plus')::int plus,COUNT(*) FILTER(WHERE r.report_type='minus')::int minus ${base}`,countVals);
+  vals.push(limit,offset);
+  const {rows}=await pool.query(`SELECT r.id,s.name student_name,u.name reporter_name,r.report_type,r.area,r.created_at ${base} ORDER BY r.created_at DESC LIMIT $${vals.length-1} OFFSET $${vals.length}`,vals);
+  res.json({reports:rows,summary:summary[0],has_more:offset+rows.length<summary[0].total,next_offset:offset+rows.length});
 });
 
 app.get('/api/admin/class-rankings',auth,admin,async(req,res)=>{
@@ -311,7 +359,19 @@ app.post('/api/admin/users',auth,admin,async(req,res)=>{const name=String(req.bo
 app.put('/api/admin/users/:id',auth,admin,async(req,res)=>{const id=Number(req.params.id),name=String(req.body.name||'').trim(),role=req.body.role,active=!!req.body.active;const {rows}=await pool.query('UPDATE users SET name=$1,role=$2,active=$3 WHERE id=$4 RETURNING id,name,email,role,active',[name,role,active,id]);res.json(rows[0])});
 app.put('/api/admin/users/:id/email',auth,admin,async(req,res)=>{const id=Number(req.params.id),email=String(req.body.email||'').trim().toLowerCase();if(!email)return res.status(400).json({error:'email_required'});const {rows}=await pool.query('UPDATE users SET email=$1 WHERE id=$2 RETURNING id,name,email,role,active',[email,id]);res.json(rows[0])});
 app.put('/api/admin/users/:id/whatsapp',auth,admin,async(req,res)=>{const id=Number(req.params.id),phone=String(req.body.phone||'').replace(/[^0-9+]/g,'');const {rows}=await pool.query('UPDATE users SET whatsapp_phone=$1 WHERE id=$2 RETURNING id,whatsapp_phone',[phone||null,id]);res.json(rows[0])});
-app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{const id=Number(req.params.id),enabled=!!req.body.enabled,emailEnabled=req.body.email_enabled!==false,whatsappEnabled=!!req.body.whatsapp_enabled,time=String(req.body.time||'').trim();if(enabled&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});if(enabled&&!emailEnabled&&!whatsappEnabled)return res.status(400).json({error:'יש לבחור לפחות דרך תזכורת אחת'});const {rows}=await pool.query(`UPDATE users SET reminder_enabled=$1,reminder_email_enabled=$2,reminder_whatsapp_enabled=$3,reminder_time=$4,reminder_timezone='Asia/Jerusalem' WHERE id=$5 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[enabled,emailEnabled,whatsappEnabled,enabled?time:null,id]);res.json(rows[0])});
+app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{
+  const id=Number(req.params.id),time=String(req.body.time||'').trim();
+  const emailEnabled=!!req.body.email_enabled,whatsappEnabled=!!req.body.whatsapp_enabled;
+  if(emailEnabled===whatsappEnabled)return res.status(400).json({error:'חובה לבחור דרך תזכורת אחת: אימייל או WhatsApp'});
+  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
+  const {rows:check}=await pool.query('SELECT email,whatsapp_phone FROM users WHERE id=$1',[id]);
+  if(!check[0])return res.status(404).json({error:'משתמש לא נמצא'});
+  if(emailEnabled&&!check[0].email)return res.status(400).json({error:'למשתמש אין כתובת אימייל'});
+  if(whatsappEnabled&&!check[0].whatsapp_phone)return res.status(400).json({error:'למשתמש אין מספר WhatsApp'});
+  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=TRUE,reminder_email_enabled=$1,reminder_whatsapp_enabled=$2,reminder_time=$3,reminder_timezone='Asia/Jerusalem' WHERE id=$4 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[emailEnabled,whatsappEnabled,time,id]);
+  res.json(rows[0]);
+});
+
 app.put('/api/admin/users/:id/password',auth,admin,async(req,res)=>{const id=Number(req.params.id),password=String(req.body.password||'');if(password.length<8)return res.status(400).json({error:'הסיסמה חייבת להכיל לפחות 8 תווים'});const hash=await bcrypt.hash(password,12);await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2',[hash,id]);res.json({ok:true})});
 app.delete('/api/admin/users/:id',auth,admin,async(req,res)=>{const id=Number(req.params.id);if(id===req.user.id)return res.status(400).json({error:'לא ניתן למחוק את המשתמש שבו אתה מחובר'});await pool.query('DELETE FROM users WHERE id=$1',[id]);res.json({ok:true})});
 app.post('/api/admin/users/:uid/groups/:gid',auth,admin,async(req,res)=>{await pool.query('INSERT INTO user_groups(user_id,group_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[Number(req.params.uid),Number(req.params.gid)]);res.json({ok:true})});
