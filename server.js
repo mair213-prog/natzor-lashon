@@ -532,10 +532,49 @@ app.post('/api/cron/reminders',async(req,res)=>{
   }
 });
 
+
+
+// ===== V2 EXPERIENCE LAYER =====
+async function ensureV2Schema(){
+  await pool.query(`CREATE TABLE IF NOT EXISTS challenges (id SERIAL PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',target_points INTEGER NOT NULL DEFAULT 100,start_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),end_at TIMESTAMPTZ,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS announcements (id SERIAL PRIMARY KEY,title TEXT NOT NULL,body TEXT NOT NULL,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (id SERIAL PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,endpoint TEXT NOT NULL UNIQUE,subscription_json TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+}
+function scoreSql(a='s'){return `(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int`}
+app.get('/api/home',auth,async(req,res)=>{
+ const pid=await activePeriodId();
+ const [sum,top,groups,ann,ch]=await Promise.all([
+  pool.query(`SELECT COUNT(*)::int reports,COUNT(*) FILTER(WHERE report_type='plus')::int plus,COUNT(*) FILTER(WHERE report_type='minus')::int minus FROM reports WHERE period_id=$1 AND created_at>=date_trunc('day',NOW() AT TIME ZONE 'Asia/Jerusalem') AT TIME ZONE 'Asia/Jerusalem'`,[pid]),
+  pool.query(`SELECT s.id,s.name,${scoreSql()} score FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id,s.name ORDER BY score DESC,s.name LIMIT 5`,[pid]),
+  pool.query(`WITH ss AS (SELECT s.id,${scoreSql()} score FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 GROUP BY s.id) SELECT g.id,g.name,COALESCE(SUM(ss.score),0)::int score FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN ss ON ss.id=gs.student_id WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name ORDER BY score DESC LIMIT 5`,[pid]),
+  pool.query(`SELECT * FROM announcements WHERE active=true ORDER BY created_at DESC LIMIT 3`),
+  pool.query(`SELECT c.*,LEAST(100,GREATEST(0,ROUND((COALESCE((SELECT SUM(CASE WHEN report_type='plus' THEN 3 ELSE -1 END) FROM reports WHERE period_id=$1 AND created_at>=c.start_at AND (c.end_at IS NULL OR created_at<=c.end_at)),0)::numeric/NULLIF(c.target_points,0))*100)))::int progress FROM challenges c WHERE c.active=true AND (c.end_at IS NULL OR c.end_at>NOW()) ORDER BY c.created_at DESC LIMIT 3`,[pid])
+ ]);
+ res.json({today:sum.rows[0],topStudents:top.rows,topGroups:groups.rows,announcements:ann.rows,challenges:ch.rows});
+});
+app.get('/api/students/:id/profile',auth,async(req,res)=>{
+ const id=Number(req.params.id),pid=await activePeriodId();
+ const {rows}=await pool.query(`SELECT s.id,s.name,COUNT(r.id) FILTER(WHERE r.report_type='plus')::int plus_count,COUNT(r.id) FILTER(WHERE r.report_type='minus')::int minus_count,${scoreSql()} score FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$2 WHERE s.id=$1 GROUP BY s.id,s.name`,[id,pid]);
+ if(!rows[0])return res.status(404).json({error:'תלמיד לא נמצא'}); const st=rows[0];
+ const hist=await pool.query(`SELECT (created_at AT TIME ZONE 'Asia/Jerusalem')::date day,SUM(CASE WHEN report_type='plus' THEN 3 ELSE -1 END)::int points FROM reports WHERE student_id=$1 AND period_id=$2 AND created_at>=NOW()-INTERVAL '14 days' GROUP BY 1 ORDER BY 1`,[id,pid]);
+ const streak=await pool.query(`WITH d AS (SELECT DISTINCT (created_at AT TIME ZONE 'Asia/Jerusalem')::date day FROM reports WHERE student_id=$1 AND period_id=$2 AND report_type='plus'), x AS (SELECT day,day-(ROW_NUMBER() OVER(ORDER BY day))::int grp FROM d), g AS (SELECT MIN(day) a,MAX(day) b,COUNT(*)::int n FROM x GROUP BY grp) SELECT COALESCE(MAX(n) FILTER(WHERE b>=CURRENT_DATE-1),0)::int streak FROM g`,[id,pid]);
+ const badges=[]; if(st.score>=30)badges.push('🌱 שומר המילה');if(st.score>=60)badges.push('💬 נאמן הלשון');if(st.score>=100)badges.push('💎 100 נקודות');if((streak.rows[0]?.streak||0)>=7)badges.push('🔥 שבוע ברצף');if(st.plus_count>=20)badges.push('⭐ 20 דיווחים חיוביים');
+ res.json({...st,streak:streak.rows[0]?.streak||0,badges,history:hist.rows});
+});
+app.delete('/api/reports/:id/undo',auth,async(req,res)=>{const id=Number(req.params.id);const {rows}=await pool.query(`DELETE FROM reports WHERE id=$1 AND (reporter_id=$2 OR $3='admin') AND created_at>NOW()-INTERVAL '30 seconds' RETURNING id`,[id,req.user.id,req.user.role]);if(!rows[0])return res.status(409).json({error:'חלון הביטול הסתיים'});res.json({ok:true})});
+app.get('/api/announcements',auth,async(req,res)=>{const {rows}=await pool.query(`SELECT * FROM announcements WHERE active=true ORDER BY created_at DESC LIMIT 20`);res.json(rows)});
+app.post('/api/admin/announcements',auth,admin,async(req,res)=>{const title=String(req.body.title||'').trim(),body=String(req.body.body||'').trim();if(!title||!body)return res.status(400).json({error:'יש למלא כותרת ותוכן'});const {rows}=await pool.query(`INSERT INTO announcements(title,body) VALUES($1,$2) RETURNING *`,[title,body]);res.json(rows[0])});
+app.get('/api/challenges',auth,async(req,res)=>{const {rows}=await pool.query(`SELECT * FROM challenges WHERE active=true ORDER BY created_at DESC`);res.json(rows)});
+app.post('/api/admin/challenges',auth,admin,async(req,res)=>{const title=String(req.body.title||'').trim(),target=Math.max(1,Number(req.body.target_points)||100);if(!title)return res.status(400).json({error:'יש להזין שם אתגר'});const {rows}=await pool.query(`INSERT INTO challenges(title,description,target_points,end_at) VALUES($1,$2,$3,$4) RETURNING *`,[title,String(req.body.description||''),target,req.body.end_at||null]);res.json(rows[0])});
+app.get('/api/push/public-key',auth,(req,res)=>res.json({key:process.env.VAPID_PUBLIC_KEY||''}));
+app.post('/api/push/subscribe',auth,async(req,res)=>{const sub=req.body;if(!sub?.endpoint)return res.status(400).json({error:'bad_subscription'});await pool.query(`INSERT INTO push_subscriptions(user_id,endpoint,subscription_json) VALUES($1,$2,$3) ON CONFLICT(endpoint) DO UPDATE SET user_id=EXCLUDED.user_id,subscription_json=EXCLUDED.subscription_json`,[req.user.id,sub.endpoint,JSON.stringify(sub)]);res.json({ok:true})});
+app.post('/api/admin/push',auth,admin,async(req,res)=>{if(!process.env.VAPID_PUBLIC_KEY||!process.env.VAPID_PRIVATE_KEY)return res.status(503).json({error:'יש להגדיר VAPID_PUBLIC_KEY ו-VAPID_PRIVATE_KEY ב-Render'});const webpush=(await import('web-push')).default;webpush.setVapidDetails(process.env.VAPID_SUBJECT||'mailto:admin@example.com',process.env.VAPID_PUBLIC_KEY,process.env.VAPID_PRIVATE_KEY);const {rows}=await pool.query('SELECT * FROM push_subscriptions');let sent=0;for(const r of rows){try{await webpush.sendNotification(JSON.parse(r.subscription_json),JSON.stringify({title:String(req.body.title||'נצור לשונך'),body:String(req.body.body||''),url:'/'}));sent++}catch(e){if(e.statusCode===404||e.statusCode===410)await pool.query('DELETE FROM push_subscriptions WHERE id=$1',[r.id])}}res.json({ok:true,sent})});
+
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'שגיאת שרת'})});
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 
 ensureV8Schema()
+  .then(()=>ensureV2Schema())
   .then(()=>syncStudyDormGroups())
   .then(()=>console.log('V8 schema ready; study/dorm groups synchronized'))
   .catch(e=>console.error('Initial group sync failed',e))
