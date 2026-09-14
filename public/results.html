@@ -65,17 +65,18 @@ async function refresh(){
       <div class="group-progress-track"><span style="width:${Math.max(0,Math.min(100,x.percent||0))}%"></span></div>
       <div class="group-progress-percent">${x.percent||0}% הכיתה צברה</div>
     </div>`).join('');
-    document.getElementById('publicStudents').innerHTML=d.students.map((s,i)=>{
+    const ranked=(d.students||[]).filter(s=>s.eligible_leader).sort((a,b)=>(Number(b.leadership_score)||0)-(Number(a.leadership_score)||0)||(Number(b.score)||0)-(Number(a.score)||0)||String(a.name||'').localeCompare(String(b.name||''),'he'));
+    document.getElementById('publicStudents').innerHTML=ranked.length?ranked.map((s,i)=>{
       const rnk=rank(s.score);
-      return `<div class="public-row lobby-row ${i<3&&s.eligible_leader?'top':''}">
+      return `<div class="public-row lobby-row ${i<3?'top':''}">
         <div class="public-place">${place(i)}</div>
         <div class="public-student-info">
           <div class="public-name">${esc(s.name)}</div>
-          <div class="public-class">${esc(s.class_name||'')}${rnk?` · <span class="public-rank">${rnk}</span>`:''}${s.eligible_leader?'':' · טרם עומד בסף ההשתתפות'}</div>
+          <div class="public-class">${esc(s.class_name||'')}${rnk?` · <span class="public-rank">${rnk}</span>`:''}</div>
         </div>
         <div class="public-score">${s.leadership_score}%<small style="display:block;font-size:12px;font-weight:400">${s.score} נק׳</small></div>
       </div>`;
-    }).join('');
+    }).join(''):'<div class="results-error">עדיין אין תלמידים שעומדים בסף ההשתתפות לדירוג</div>';
   }catch(e){
     document.getElementById('publicStudents').innerHTML='<div class="results-error">לא ניתן לטעון את התוצאות כרגע</div>';
   }

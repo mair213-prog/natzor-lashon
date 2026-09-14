@@ -278,11 +278,14 @@ app.get('/api/public/results',async(req,res)=>{
         LEAST(100,ROUND(sc.p::numeric/NULLIF((period.days*2),0)*100))::int participation_percent,
         GREATEST(0,LEAST(100,ROUND(100-(sc.m::numeric/period.days)*20)))::int clean_language_percent
       FROM scores sc CROSS JOIN period
-    ) SELECT r.id,r.name,r.score,r.participation_percent,r.clean_language_percent,
-      ROUND(r.clean_language_percent*0.70+r.participation_percent*0.30)::int leadership_score,
-      (r.participation_percent>=50) eligible_leader,
+    ), scored AS (
+      SELECT r.*,
+        ROUND(r.clean_language_percent*0.70+r.participation_percent*0.30)::int leadership_score,
+        (r.participation_percent>=50) eligible_leader
+      FROM ranked r
+    ) SELECT r.id,r.name,r.score,r.participation_percent,r.clean_language_percent,r.leadership_score,r.eligible_leader,
       COALESCE((SELECT g.name FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE gs.student_id=r.id AND g.type='class' AND g.active=true ORDER BY g.name LIMIT 1),'') class_name
-      FROM ranked r ORDER BY eligible_leader DESC,leadership_score DESC,r.score DESC,r.name LIMIT 20`,[pid]);
+      FROM scored r WHERE r.eligible_leader=true ORDER BY r.leadership_score DESC,r.score DESC,r.name LIMIT 20`,[pid]);
     const {rows:leaders}=await pool.query(`WITH scores AS (
       SELECT s.id,(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int score
       FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id
@@ -588,7 +591,7 @@ app.get('/api/home',auth,async(req,res)=>{
  const pid=await activePeriodId();
  const [sum,top,groups,ann,ch]=await Promise.all([
   pool.query(`SELECT COUNT(*)::int reports,COUNT(*) FILTER(WHERE report_type='plus')::int plus,COUNT(*) FILTER(WHERE report_type='minus')::int minus FROM reports WHERE period_id=$1 AND created_at>=date_trunc('day',NOW() AT TIME ZONE 'Asia/Jerusalem') AT TIME ZONE 'Asia/Jerusalem'`,[pid]),
-  pool.query(`WITH period AS (SELECT GREATEST(1,((now() AT TIME ZONE 'Asia/Jerusalem')::date-(started_at AT TIME ZONE 'Asia/Jerusalem')::date)+1)::int days FROM score_periods WHERE id=$1), sc AS (SELECT s.id,s.name,COUNT(r.id) FILTER(WHERE r.report_type='plus')::int p,COUNT(r.id) FILTER(WHERE r.report_type='minus')::int m FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id,s.name), x AS (SELECT sc.*,(sc.p*3-sc.m+FLOOR(sc.p/20.0)*5)::int score,LEAST(100,ROUND(sc.p::numeric/NULLIF(period.days*2,0)*100))::int participation_percent,GREATEST(0,LEAST(100,ROUND(100-(sc.m::numeric/period.days)*20)))::int clean_language_percent FROM sc CROSS JOIN period) SELECT id,name,score,participation_percent,clean_language_percent,ROUND(clean_language_percent*0.70+participation_percent*0.30)::int leadership_score,(participation_percent>=50) eligible_leader FROM x ORDER BY eligible_leader DESC,leadership_score DESC,score DESC,name LIMIT 5`,[pid]),
+  pool.query(`WITH period AS (SELECT GREATEST(1,((now() AT TIME ZONE 'Asia/Jerusalem')::date-(started_at AT TIME ZONE 'Asia/Jerusalem')::date)+1)::int days FROM score_periods WHERE id=$1), sc AS (SELECT s.id,s.name,COUNT(r.id) FILTER(WHERE r.report_type='plus')::int p,COUNT(r.id) FILTER(WHERE r.report_type='minus')::int m FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id,s.name), x AS (SELECT sc.*,(sc.p*3-sc.m+FLOOR(sc.p/20.0)*5)::int score,LEAST(100,ROUND(sc.p::numeric/NULLIF(period.days*2,0)*100))::int participation_percent,GREATEST(0,LEAST(100,ROUND(100-(sc.m::numeric/period.days)*20)))::int clean_language_percent FROM sc CROSS JOIN period), scored AS (SELECT x.*,ROUND(clean_language_percent*0.70+participation_percent*0.30)::int leadership_score,(participation_percent>=50) eligible_leader FROM x) SELECT id,name,score,participation_percent,clean_language_percent,leadership_score,eligible_leader FROM scored WHERE eligible_leader=true ORDER BY leadership_score DESC,score DESC,name LIMIT 5`,[pid]),
   pool.query(`WITH ss AS (SELECT s.id,${scoreSql()} score FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 GROUP BY s.id) SELECT g.id,g.name,COALESCE(SUM(ss.score),0)::int score FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN ss ON ss.id=gs.student_id WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name ORDER BY score DESC LIMIT 5`,[pid]),
   pool.query(`SELECT * FROM announcements WHERE active=true ORDER BY created_at DESC LIMIT 3`),
   pool.query(`SELECT c.*,LEAST(100,GREATEST(0,ROUND((COALESCE((SELECT SUM(CASE WHEN report_type='plus' THEN 3 ELSE -1 END) FROM reports WHERE period_id=$1 AND created_at>=c.start_at AND (c.end_at IS NULL OR created_at<=c.end_at)),0)::numeric/NULLIF(c.target_points,0))*100)))::int progress FROM challenges c WHERE c.active=true AND (c.end_at IS NULL OR c.end_at>NOW()) ORDER BY c.created_at DESC LIMIT 3`,[pid])
