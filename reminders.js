@@ -7,8 +7,15 @@ function localParts(timeZone='Asia/Jerusalem'){
 }
 function mins(hm){const [h,m]=hm.split(':').map(Number);return h*60+m}
 function normalizePhone(phone){
-  let p=String(phone||'').replace(/\D/g,'');
-  if(p.startsWith('0')) p='972'+p.slice(1);
+  let p=String(phone||'').trim().replace(/[^0-9+]/g,'');
+  // Meta WhatsApp Cloud API expects E.164 digits (country code, no leading +).
+  if(p.startsWith('+')) p=p.slice(1);
+  if(p.startsWith('00972')) p='972'+p.slice(5);
+  else if(p.startsWith('9720')) p='972'+p.slice(4);
+  else if(p.startsWith('0')) p='972'+p.slice(1);
+  // Also accept an Israeli mobile number entered without the leading 0.
+  else if(/^5\d{8}$/.test(p)) p='972'+p;
+  if(!/^9725\d{8}$/.test(p) && !/^\d{8,15}$/.test(p)) throw new Error('מספר WhatsApp אינו בפורמט תקין');
   return p;
 }
 function mailer(){
@@ -41,7 +48,13 @@ async function sendWhatsApp(u,appUrl){
     method:'POST',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
     body:JSON.stringify(body)
   });
-  if(!r.ok) throw new Error(`WhatsApp send failed (${r.status}): ${(await r.text()).slice(0,300)}`);
+  const responseText=await r.text();
+  if(!r.ok) throw new Error(`WhatsApp send failed (${r.status}): ${responseText.slice(0,300)}`);
+  let meta={};
+  try{meta=JSON.parse(responseText)}catch{}
+  const messageId=meta?.messages?.[0]?.id||null;
+  console.log('WhatsApp accepted by Meta',{userId:u.id,to,messageId});
+  return {accepted:true,to,messageId};
 }
 export async function sendDueReminders(pool){
   const {rows}=await pool.query(`SELECT id,name,email,whatsapp_phone,reminder_time,reminder_timezone,reminder_last_sent_date,

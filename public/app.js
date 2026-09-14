@@ -242,7 +242,7 @@ async function saveReminder(id){
   await api('/api/admin/users/'+id+'/reminder',{method:'PUT',body:JSON.stringify({enabled:!off,time:$('utime_'+id).value,email_enabled:!off&&email,whatsapp_enabled:!off&&wa})});
   alert(off?'התזכורת בוטלה לאיש הצוות':'התזכורת נשמרה');
 }
-async function sendReminderNow(id){if(!confirm('לשלוח עכשיו תזכורת לאיש הצוות לפי הערוצים שנבחרו?'))return;try{const r=await api('/api/admin/users/'+id+'/reminder/send-now',{method:'POST'});alert(`נשלח בהצלחה. אימייל: ${r.emailSent||0}, WhatsApp: ${r.whatsappSent||0}`)}catch(e){alert(e.message)}}
+async function sendReminderNow(id){if(!confirm('לשלוח עכשיו תזכורת לאיש הצוות לפי הערוצים שנבחרו?'))return;try{const r=await api('/api/admin/users/'+id+'/reminder/send-now',{method:'POST'});alert(`הבקשה התקבלה לשליחה. אימייל: ${r.emailSent||0}, WhatsApp: ${r.whatsappSent||0}. שים לב: אישור השליחה אינו אישור מסירה לטלפון.`)}catch(e){alert(e.message)}}
 async function resetUserPassword(id){const password=$('upass_'+id).value;if(!password)return alert('הזן סיסמה חדשה');await api('/api/admin/users/'+id+'/password',{method:'PUT',body:JSON.stringify({password})});alert('הסיסמה הוחלפה בהצלחה');refreshAdminEdit()}
 async function deleteUser(id){if(confirm('למחוק את משתמש הצוות?')){await api('/api/admin/users/'+id,{method:'DELETE'});refreshAdminEdit()}}
 async function toggleUserGroup(uid,gid,checked){await api(`/api/admin/users/${uid}/groups/${gid}`,{method:checked?'POST':'DELETE'})}
