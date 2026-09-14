@@ -587,6 +587,8 @@ async function ensureV2Schema(){
   await pool.query(`ALTER TABLE announcements ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
   await pool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (id SERIAL PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,endpoint TEXT NOT NULL UNIQUE,subscription_json TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   await pool.query(`CREATE TABLE IF NOT EXISTS push_messages (id BIGSERIAL PRIMARY KEY,title TEXT NOT NULL,body TEXT NOT NULL,audience TEXT NOT NULL DEFAULT 'all',target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS fcm_tokens (id BIGSERIAL PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,token TEXT NOT NULL UNIQUE,platform TEXT NOT NULL DEFAULT 'android',updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS push_message_reads (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,message_id BIGINT NOT NULL REFERENCES push_messages(id) ON DELETE CASCADE,dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(user_id,message_id))`);
 }
 function scoreSql(a='s'){return `(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int`}
 app.get('/api/home',auth,async(req,res)=>{
@@ -607,7 +609,7 @@ app.get('/api/students/:id/profile',auth,async(req,res)=>{
  const hist=await pool.query(`WITH days AS (SELECT generate_series((now() AT TIME ZONE 'Asia/Jerusalem')::date-13,(now() AT TIME ZONE 'Asia/Jerusalem')::date,'1 day'::interval)::date AS report_day), daily AS (SELECT (created_at AT TIME ZONE 'Asia/Jerusalem')::date AS report_day,SUM(CASE WHEN report_type='plus' THEN 3 ELSE -1 END)::int AS points FROM reports WHERE student_id=$1 AND period_id=$2 AND (created_at AT TIME ZONE 'Asia/Jerusalem')::date>=(now() AT TIME ZONE 'Asia/Jerusalem')::date-13 GROUP BY 1) SELECT to_char(days.report_day,'YYYY-MM-DD') AS day,to_char(days.report_day,'DD.MM') AS label,COALESCE(daily.points,0)::int AS points FROM days LEFT JOIN daily USING(report_day) ORDER BY days.report_day`,[id,pid]);
  const streak=await pool.query(`WITH d AS (SELECT DISTINCT (created_at AT TIME ZONE 'Asia/Jerusalem')::date AS report_day FROM reports WHERE student_id=$1 AND period_id=$2 AND report_type='plus'), x AS (SELECT report_day,report_day-(ROW_NUMBER() OVER(ORDER BY report_day))::int AS grp FROM d), g AS (SELECT MIN(report_day) AS a,MAX(report_day) AS b,COUNT(*)::int AS n FROM x GROUP BY grp) SELECT COALESCE(MAX(n) FILTER(WHERE b>=CURRENT_DATE-1),0)::int AS streak FROM g`,[id,pid]);
  const today=await pool.query(`SELECT COUNT(*) FILTER(WHERE report_type='plus')::int plus,COUNT(*) FILTER(WHERE report_type='minus')::int minus FROM reports WHERE student_id=$1 AND period_id=$2 AND (created_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date`,[id,pid]);
- const badges=[]; if(st.score>=30)badges.push('🌱 שומר המילה');if(st.score>=60)badges.push('💬 נאמן הלשון');if(st.score>=100)badges.push('💎 100 נקודות');if((streak.rows[0]?.streak||0)>=7)badges.push('🔥 שבוע ברצף');if(st.plus_count>=20)badges.push('⭐ 20 השתתפויות בשיעור');
+ const badges=[]; if(st.score>=30)badges.push('🌱 שומר המילה');if(st.score>=60)badges.push('💬 נאמן הלשון');if(st.score>=100)badges.push('💎 100 נקודות');if((streak.rows[0]?.streak||0)>=7)badges.push('🔥 שבוע ברצף');if(st.plus_count>=20)badges.push('⭐ 20 דיווחי השתתפות בשיעורים');
  res.json({...st,streak:streak.rows[0]?.streak||0,badges,history:hist.rows,today:{plus:Number(today.rows[0]?.plus||0),minus:Number(today.rows[0]?.minus||0),balance:Number(today.rows[0]?.plus||0)*3-Number(today.rows[0]?.minus||0)}});
 });
 app.delete('/api/reports/:id/undo',auth,async(req,res)=>{const id=Number(req.params.id);const {rows}=await pool.query(`DELETE FROM reports WHERE id=$1 AND (reporter_id=$2 OR $3='admin') AND created_at>NOW()-INTERVAL '30 seconds' RETURNING id`,[id,req.user.id,req.user.role]);if(!rows[0])return res.status(409).json({error:'חלון הביטול הסתיים'});res.json({ok:true})});
@@ -623,21 +625,54 @@ app.post('/api/admin/challenges',auth,admin,async(req,res)=>{const title=String(
 app.put('/api/admin/challenges/:id',auth,admin,async(req,res)=>{const id=Number(req.params.id),title=String(req.body.title||'').trim(),target=Math.max(1,Number(req.body.target_points)||100);if(!title)return res.status(400).json({error:'יש להזין שם אתגר'});const active=typeof req.body.active==='boolean'?req.body.active:null;const {rows}=await pool.query(`UPDATE challenges SET title=$1,description=$2,target_points=$3,end_at=$4,active=COALESCE($5,active) WHERE id=$6 RETURNING *`,[title,String(req.body.description||''),target,req.body.end_at||null,active,id]);if(!rows[0])return res.status(404).json({error:'אתגר לא נמצא'});res.json(rows[0])});
 app.delete('/api/admin/challenges/:id',auth,admin,async(req,res)=>{await pool.query('DELETE FROM challenges WHERE id=$1',[Number(req.params.id)]);res.json({ok:true})});
 
+let firebaseAdminPromise=null;
+async function firebaseAdmin(){
+  if(firebaseAdminPromise)return firebaseAdminPromise;
+  firebaseAdminPromise=(async()=>{
+    const raw=process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+    if(!raw)return null;
+    try{
+      const serviceAccount=JSON.parse(Buffer.from(raw,'base64').toString('utf8'));
+      const mod=await import('firebase-admin');
+      const admin=mod.default||mod;
+      if(!admin.apps.length)admin.initializeApp({credential:admin.credential.cert(serviceAccount)});
+      return admin;
+    }catch(e){console.error('Firebase Admin init failed',e);return null}
+  })();
+  return firebaseAdminPromise;
+}
+async function sendFcm(tokens,payload){
+  if(!tokens.length)return {sent:0,failed:0};
+  const admin=await firebaseAdmin();
+  if(!admin)return {sent:0,failed:tokens.length};
+  let sent=0,failed=0;
+  for(let i=0;i<tokens.length;i+=500){
+    const batch=tokens.slice(i,i+500);
+    const r=await admin.messaging().sendEachForMulticast({tokens:batch,data:{title:String(payload.title||'נצור לשונך'),body:String(payload.body||''),messageId:String(payload.messageId||''),url:'/'},android:{priority:'high'}});
+    sent+=r.successCount;failed+=r.failureCount;
+    for(let j=0;j<r.responses.length;j++){
+      const x=r.responses[j];
+      if(!x.success&&['messaging/registration-token-not-registered','messaging/invalid-registration-token'].includes(x.error?.code))await pool.query('DELETE FROM fcm_tokens WHERE token=$1',[batch[j]]).catch(()=>{});
+    }
+  }
+  return {sent,failed};
+}
+
 app.get('/api/push/public-key',auth,(req,res)=>res.json({key:process.env.VAPID_PUBLIC_KEY||''}));
 app.post('/api/push/subscribe',auth,async(req,res)=>{const sub=req.body;if(!sub?.endpoint)return res.status(400).json({error:'bad_subscription'});await pool.query(`INSERT INTO push_subscriptions(user_id,endpoint,subscription_json) VALUES($1,$2,$3) ON CONFLICT(endpoint) DO UPDATE SET user_id=EXCLUDED.user_id,subscription_json=EXCLUDED.subscription_json`,[req.user.id,sub.endpoint,JSON.stringify(sub)]);res.json({ok:true})});
-app.get('/api/admin/push/stats',auth,admin,async(req,res)=>{const {rows}=await pool.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE u.role='study')::int study,COUNT(*) FILTER(WHERE u.role='dorm')::int dorm,COUNT(*) FILTER(WHERE u.role='admin')::int admin FROM push_subscriptions p JOIN users u ON u.id=p.user_id AND u.active=true`);res.json(rows[0]||{total:0,study:0,dorm:0,admin:0})});
-app.get('/api/push/inbox',auth,async(req,res)=>{if(req.query.latest==='1'){const {rows}=await pool.query(`SELECT COALESCE(MAX(id),0)::bigint AS id FROM push_messages WHERE audience='all' OR audience=$1 OR (audience='user' AND target_user_id=$2)`,[req.user.role,req.user.id]);return res.json({latest:Number(rows[0]?.id||0)})}const after=Math.max(0,Number(req.query.after)||0);const {rows}=await pool.query(`SELECT id,title,body,created_at FROM push_messages WHERE id>$1 AND (audience='all' OR audience=$2 OR (audience='user' AND target_user_id=$3)) ORDER BY id ASC LIMIT 20`,[after,req.user.role,req.user.id]);res.json(rows)});
+app.post('/api/push/fcm-token',auth,async(req,res)=>{const token=String(req.body.token||'').trim();if(token.length<20)return res.status(400).json({error:'bad_token'});await pool.query(`INSERT INTO fcm_tokens(user_id,token,platform,updated_at) VALUES($1,$2,'android',NOW()) ON CONFLICT(token) DO UPDATE SET user_id=EXCLUDED.user_id,updated_at=NOW()`,[req.user.id,token]);res.json({ok:true})});
+app.get('/api/admin/push/stats',auth,admin,async(req,res)=>{const [w,f]=await Promise.all([pool.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE u.role='study')::int study,COUNT(*) FILTER(WHERE u.role='dorm')::int dorm,COUNT(*) FILTER(WHERE u.role='admin')::int admin FROM push_subscriptions p JOIN users u ON u.id=p.user_id AND u.active=true`),pool.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE u.role='study')::int study,COUNT(*) FILTER(WHERE u.role='dorm')::int dorm,COUNT(*) FILTER(WHERE u.role='admin')::int admin FROM fcm_tokens p JOIN users u ON u.id=p.user_id AND u.active=true`)]);const a=w.rows[0]||{},b=f.rows[0]||{};res.json({total:Number(a.total||0)+Number(b.total||0),study:Number(a.study||0)+Number(b.study||0),dorm:Number(a.dorm||0)+Number(b.dorm||0),admin:Number(a.admin||0)+Number(b.admin||0),web:Number(a.total||0),android:Number(b.total||0)})});
+app.get('/api/push/inbox',auth,async(req,res)=>{const {rows}=await pool.query(`SELECT m.id,m.title,m.body,m.created_at FROM push_messages m LEFT JOIN push_message_reads r ON r.message_id=m.id AND r.user_id=$1 WHERE r.message_id IS NULL AND (m.audience='all' OR m.audience=$2 OR (m.audience='user' AND m.target_user_id=$1)) ORDER BY m.id ASC LIMIT 50`,[req.user.id,req.user.role]);res.json(rows)});
+app.post('/api/push/messages/:id/dismiss',auth,async(req,res)=>{const id=Number(req.params.id);if(!id)return res.status(400).json({error:'bad_id'});const {rows}=await pool.query(`SELECT id FROM push_messages WHERE id=$1 AND (audience='all' OR audience=$2 OR (audience='user' AND target_user_id=$3))`,[id,req.user.role,req.user.id]);if(!rows[0])return res.status(404).json({error:'message_not_found'});await pool.query(`INSERT INTO push_message_reads(user_id,message_id) VALUES($1,$2) ON CONFLICT(user_id,message_id) DO NOTHING`,[req.user.id,id]);res.json({ok:true})});
 app.post('/api/admin/push',auth,admin,async(req,res)=>{
- if(!process.env.VAPID_PUBLIC_KEY||!process.env.VAPID_PRIVATE_KEY)return res.status(503).json({error:'יש להגדיר VAPID_PUBLIC_KEY ו-VAPID_PRIVATE_KEY ב-Render'});
  const audience=['all','study','dorm','admin','user'].includes(String(req.body.audience||''))?String(req.body.audience):'all';
  const targetUserId=audience==='user'?Number(req.body.user_id)||null:null;if(audience==='user'&&!targetUserId)return res.status(400).json({error:'יש לבחור איש צוות'});
  const title=String(req.body.title||'נצור לשונך').trim()||'נצור לשונך',body=String(req.body.body||'').trim();if(!body)return res.status(400).json({error:'יש להזין תוכן להתראה'});
- await pool.query(`INSERT INTO push_messages(title,body,audience,target_user_id) VALUES($1,$2,$3,$4)`,[title,body,audience,targetUserId]);
- const webpush=(await import('web-push')).default;webpush.setVapidDetails(process.env.VAPID_SUBJECT||'mailto:admin@example.com',process.env.VAPID_PUBLIC_KEY,process.env.VAPID_PRIVATE_KEY);
- let sql=`SELECT p.* FROM push_subscriptions p JOIN users u ON u.id=p.user_id WHERE u.active=true`,params=[];
- if(audience==='study'||audience==='dorm'||audience==='admin'){params.push(audience);sql+=` AND u.role=$1`}else if(audience==='user'){params.push(targetUserId);sql+=` AND u.id=$1`}
- const {rows}=await pool.query(sql,params);let sent=0;for(const r of rows){try{await webpush.sendNotification(JSON.parse(r.subscription_json),JSON.stringify({title,body,url:'/'}));sent++}catch(e){if(e.statusCode===404||e.statusCode===410)await pool.query('DELETE FROM push_subscriptions WHERE id=$1',[r.id])}}
- res.json({ok:true,sent,audience});
+ const ins=await pool.query(`INSERT INTO push_messages(title,body,audience,target_user_id) VALUES($1,$2,$3,$4) RETURNING id`,[title,body,audience,targetUserId]);const messageId=Number(ins.rows[0].id);
+ let where=`u.active=true`,params=[];if(audience==='study'||audience==='dorm'||audience==='admin'){params.push(audience);where+=` AND u.role=$1`}else if(audience==='user'){params.push(targetUserId);where+=` AND u.id=$1`}
+ let webSent=0;if(process.env.VAPID_PUBLIC_KEY&&process.env.VAPID_PRIVATE_KEY){try{const webpush=(await import('web-push')).default;webpush.setVapidDetails(process.env.VAPID_SUBJECT||'mailto:admin@example.com',process.env.VAPID_PUBLIC_KEY,process.env.VAPID_PRIVATE_KEY);const {rows}=await pool.query(`SELECT p.* FROM push_subscriptions p JOIN users u ON u.id=p.user_id WHERE ${where}`,params);for(const r of rows){try{await webpush.sendNotification(JSON.parse(r.subscription_json),JSON.stringify({title,body,url:'/',messageId}));webSent++}catch(e){if(e.statusCode===404||e.statusCode===410)await pool.query('DELETE FROM push_subscriptions WHERE id=$1',[r.id])}}}catch(e){console.error('Web push send failed',e)}}
+ const fcmRows=await pool.query(`SELECT p.token FROM fcm_tokens p JOIN users u ON u.id=p.user_id WHERE ${where}`,params);const fcm=await sendFcm(fcmRows.rows.map(x=>x.token),{title,body,messageId});
+ res.json({ok:true,messageId,sent:webSent+fcm.sent,web_sent:webSent,fcm_sent:fcm.sent,fcm_failed:fcm.failed,audience});
 });
 
 
