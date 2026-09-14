@@ -277,8 +277,14 @@ app.get('/api/public/results',async(req,res)=>{
       SELECT s.id,(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int score
       FROM students s LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$1 WHERE s.active=true GROUP BY s.id
     ) SELECT g.id,g.name,COALESCE(SUM(sc.score),0)::int score FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN scores sc ON sc.id=gs.student_id WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name ORDER BY score DESC,g.name`,[pid]);
-    const maxScore=Math.max(0,...leaders.map(g=>Number(g.score||0)));
-    const groups=leaders.map((g,i)=>({...g,place:i+1,percent:maxScore>0?Math.max(0,Math.round(Number(g.score||0)/maxScore*100)):0}));
+    const {rows:periodRows}=await pool.query('SELECT started_at FROM score_periods WHERE id=$1',[pid]);
+    const start=new Date(periodRows[0]?.started_at||Date.now());
+    const daysElapsed=Math.max(1,Math.floor((Date.now()-start.getTime())/86400000)+1);
+    const {rows:memberCounts}=await pool.query(`SELECT g.id,COUNT(gs.student_id)::int members FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id WHERE g.type='class' AND g.active=true GROUP BY g.id`);
+    const counts=new Map(memberCounts.map(x=>[Number(x.id),Number(x.members||0)]));
+    const maxPlusPerStudent=daysElapsed*2;
+    const maxScorePerStudent=maxPlusPerStudent*3+Math.floor(maxPlusPerStudent/20)*5;
+    const groups=leaders.map((g,i)=>{const max_possible=(counts.get(Number(g.id))||0)*maxScorePerStudent;return {...g,place:i+1,max_possible,percent:max_possible>0?Math.max(0,Math.min(100,Math.round(Number(g.score||0)/max_possible*100))):0}});
     res.set('Cache-Control','no-store');res.json({leader:leaders[0]||null,groups,students});
   }catch(e){console.error(e);res.status(500).json({error:'שגיאה בטעינת התוצאות'})}
 });
@@ -310,7 +316,7 @@ app.get('/api/admin/reports',auth,admin,async(req,res)=>{
   const countVals=[...vals];
   const {rows:summary}=await pool.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE r.report_type='plus')::int plus,COUNT(*) FILTER(WHERE r.report_type='minus')::int minus ${base}`,countVals);
   vals.push(limit,offset);
-  const {rows}=await pool.query(`SELECT r.id,s.name student_name,u.name reporter_name,r.report_type,r.area,r.created_at ${base} ORDER BY r.created_at DESC LIMIT $${vals.length-1} OFFSET $${vals.length}`,vals);
+  const {rows}=await pool.query(`SELECT r.id,s.id student_id,s.name student_name,u.name reporter_name,r.report_type,r.area,r.created_at ${base} ORDER BY r.created_at DESC LIMIT $${vals.length-1} OFFSET $${vals.length}`,vals);
   res.json({reports:rows,summary:summary[0],has_more:offset+rows.length<summary[0].total,next_offset:offset+rows.length});
 });
 
@@ -325,6 +331,33 @@ app.get('/api/admin/class-rankings',auth,admin,async(req,res)=>{
     ) SELECT group_id,group_name,goal_target,COALESCE(SUM(score),0)::int class_score,
       COALESCE(json_agg(json_build_object('id',student_id,'name',student_name,'base_score',base_score,'bonus',bonus,'score',score) ORDER BY score DESC,student_name ASC),'[]') students
     FROM ranked GROUP BY group_id,group_name,goal_target ORDER BY class_score DESC,group_name`);res.json(rows);
+});
+
+app.get('/api/admin/classes/:id/profile',auth,admin,async(req,res)=>{
+  const groupId=Number(req.params.id);if(!groupId)return res.status(400).json({error:'כיתה לא תקינה'});
+  const pid=await activePeriodId();
+  const {rows:grows}=await pool.query(`SELECT g.id,g.name,g.goal_target,COUNT(gs.student_id)::int student_count FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id WHERE g.id=$1 AND g.type='class' AND g.active=true GROUP BY g.id,g.name,g.goal_target`,[groupId]);
+  if(!grows[0])return res.status(404).json({error:'הכיתה לא נמצאה'});const g=grows[0];
+  const {rows:periodRows}=await pool.query('SELECT started_at FROM score_periods WHERE id=$1',[pid]);
+  const {rows:stats}=await pool.query(`SELECT
+    COUNT(r.id) FILTER(WHERE r.report_type='plus')::int plus_all,
+    COUNT(r.id) FILTER(WHERE r.report_type='minus')::int minus_all,
+    COUNT(r.id) FILTER(WHERE r.report_type='plus' AND (r.created_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date)::int plus_today,
+    COUNT(r.id) FILTER(WHERE r.report_type='minus' AND (r.created_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date)::int minus_today,
+    COUNT(r.id) FILTER(WHERE r.report_type='plus' AND r.created_at>=NOW()-INTERVAL '7 days')::int plus_week,
+    COUNT(r.id) FILTER(WHERE r.report_type='minus' AND r.created_at>=NOW()-INTERVAL '7 days')::int minus_week
+    FROM group_students gs LEFT JOIN reports r ON r.student_id=gs.student_id AND r.period_id=$2 WHERE gs.group_id=$1`,[groupId,pid]);
+  const {rows:students}=await pool.query(`SELECT s.id,s.name,COUNT(r.id) FILTER(WHERE r.report_type='plus')::int plus_count,COUNT(r.id) FILTER(WHERE r.report_type='minus')::int minus_count,(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int score FROM group_students gs JOIN students s ON s.id=gs.student_id LEFT JOIN reports r ON r.student_id=s.id AND r.period_id=$2 WHERE gs.group_id=$1 AND s.active=true GROUP BY s.id,s.name ORDER BY score DESC,s.name`,[groupId,pid]);
+  const x=stats[0]||{},n=Number(g.student_count||0),start=new Date(periodRows[0]?.started_at||Date.now());
+  const days=Math.max(1,Math.floor((Date.now()-start.getTime())/86400000)+1),maxPlusPerStudent=days*2,maxScorePerStudent=maxPlusPerStudent*3+Math.floor(maxPlusPerStudent/20)*5,maxPossible=n*maxScorePerStudent;
+  const score=students.reduce((a,z)=>a+Number(z.score||0),0),todayMax=n*2,todayParticipation=todayMax?Math.round(Number(x.plus_today||0)/todayMax*100):0;
+  res.json({...g,score,max_possible:maxPossible,progress_percent:maxPossible?Math.max(0,Math.round(score/maxPossible*100)):0,days_elapsed:days,today:{plus:Number(x.plus_today||0),minus:Number(x.minus_today||0),participation_percent:todayParticipation,balance:Number(x.plus_today||0)*3-Number(x.minus_today||0)},week:{plus:Number(x.plus_week||0),minus:Number(x.minus_week||0),balance:Number(x.plus_week||0)*3-Number(x.minus_week||0)},all:{plus:Number(x.plus_all||0),minus:Number(x.minus_all||0),balance:score},students});
+});
+
+app.get('/api/admin/daily-summary',auth,admin,async(req,res)=>{
+  const pid=await activePeriodId();
+  const {rows}=await pool.query(`SELECT g.id,g.name,COUNT(DISTINCT gs.student_id)::int students,COUNT(r.id) FILTER(WHERE r.report_type='plus')::int plus,COUNT(r.id) FILTER(WHERE r.report_type='minus')::int minus FROM groups g LEFT JOIN group_students gs ON gs.group_id=g.id LEFT JOIN reports r ON r.student_id=gs.student_id AND r.period_id=$1 AND (r.created_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date WHERE g.type='class' AND g.active=true GROUP BY g.id,g.name ORDER BY g.name`,[pid]);
+  res.json(rows.map(x=>({...x,participation_percent:Number(x.students)?Math.round(Number(x.plus)/(Number(x.students)*2)*100):0,balance:Number(x.plus)*3-Number(x.minus)})));
 });
 
 app.get('/api/admin/weekly',auth,admin,async(req,res)=>{
@@ -558,8 +591,9 @@ app.get('/api/students/:id/profile',auth,async(req,res)=>{
  if(!rows[0])return res.status(404).json({error:'תלמיד לא נמצא'}); const st=rows[0];
  const hist=await pool.query(`SELECT (created_at AT TIME ZONE 'Asia/Jerusalem')::date AS report_day,SUM(CASE WHEN report_type='plus' THEN 3 ELSE -1 END)::int AS points FROM reports WHERE student_id=$1 AND period_id=$2 AND created_at>=NOW()-INTERVAL '14 days' GROUP BY 1 ORDER BY 1`,[id,pid]);
  const streak=await pool.query(`WITH d AS (SELECT DISTINCT (created_at AT TIME ZONE 'Asia/Jerusalem')::date AS report_day FROM reports WHERE student_id=$1 AND period_id=$2 AND report_type='plus'), x AS (SELECT report_day,report_day-(ROW_NUMBER() OVER(ORDER BY report_day))::int AS grp FROM d), g AS (SELECT MIN(report_day) AS a,MAX(report_day) AS b,COUNT(*)::int AS n FROM x GROUP BY grp) SELECT COALESCE(MAX(n) FILTER(WHERE b>=CURRENT_DATE-1),0)::int AS streak FROM g`,[id,pid]);
- const badges=[]; if(st.score>=30)badges.push('🌱 שומר המילה');if(st.score>=60)badges.push('💬 נאמן הלשון');if(st.score>=100)badges.push('💎 100 נקודות');if((streak.rows[0]?.streak||0)>=7)badges.push('🔥 שבוע ברצף');if(st.plus_count>=20)badges.push('⭐ 20 דיווחים חיוביים');
- res.json({...st,streak:streak.rows[0]?.streak||0,badges,history:hist.rows});
+ const today=await pool.query(`SELECT COUNT(*) FILTER(WHERE report_type='plus')::int plus,COUNT(*) FILTER(WHERE report_type='minus')::int minus FROM reports WHERE student_id=$1 AND period_id=$2 AND (created_at AT TIME ZONE 'Asia/Jerusalem')::date=(now() AT TIME ZONE 'Asia/Jerusalem')::date`,[id,pid]);
+ const badges=[]; if(st.score>=30)badges.push('🌱 שומר המילה');if(st.score>=60)badges.push('💬 נאמן הלשון');if(st.score>=100)badges.push('💎 100 נקודות');if((streak.rows[0]?.streak||0)>=7)badges.push('🔥 שבוע ברצף');if(st.plus_count>=20)badges.push('⭐ 20 השתתפויות בשיעור');
+ res.json({...st,streak:streak.rows[0]?.streak||0,badges,history:hist.rows,today:{plus:Number(today.rows[0]?.plus||0),minus:Number(today.rows[0]?.minus||0),balance:Number(today.rows[0]?.plus||0)*3-Number(today.rows[0]?.minus||0)}});
 });
 app.delete('/api/reports/:id/undo',auth,async(req,res)=>{const id=Number(req.params.id);const {rows}=await pool.query(`DELETE FROM reports WHERE id=$1 AND (reporter_id=$2 OR $3='admin') AND created_at>NOW()-INTERVAL '30 seconds' RETURNING id`,[id,req.user.id,req.user.role]);if(!rows[0])return res.status(409).json({error:'חלון הביטול הסתיים'});res.json({ok:true})});
 app.get('/api/announcements',auth,async(req,res)=>{const {rows}=await pool.query(`SELECT * FROM announcements WHERE active=true ORDER BY created_at DESC LIMIT 20`);res.json(rows)});

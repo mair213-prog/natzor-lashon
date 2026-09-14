@@ -63,7 +63,7 @@ async function refresh(){
     document.getElementById('groupProgress').innerHTML=(d.groups||[]).map((x,i)=>`<div class="group-progress-card ${i===0?'first':''}">
       <div class="group-progress-head"><span>${i===0?'🏆 ':''}${esc(x.name)}</span><b>${x.score} נק׳</b></div>
       <div class="group-progress-track"><span style="width:${Math.max(0,Math.min(100,x.percent||0))}%"></span></div>
-      <div class="group-progress-percent">${x.percent||0}% ביחס למובילה</div>
+      <div class="group-progress-percent">${x.percent||0}% הכיתה צברה</div>
     </div>`).join('');
     document.getElementById('publicStudents').innerHTML=d.students.map((s,i)=>{
       const rnk=rank(s.score);
