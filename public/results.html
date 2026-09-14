@@ -27,7 +27,7 @@
   </section>
   <section class="lobby-board">
     <div class="lobby-board-title">
-      <h1>🏆 20 התלמידים המובילים</h1>
+      <h1>🏆 20 התלמידים המובילים</h1><div class="small" style="text-align:center;margin-top:-8px;margin-bottom:12px">מדד מובילות: 70% שפה נקייה + 30% השתתפות</div>
       <span class="live-pill">● מתעדכן אונליין</span>
     </div>
     <div id="publicStudents" class="lobby-students"></div>
@@ -67,13 +67,13 @@ async function refresh(){
     </div>`).join('');
     document.getElementById('publicStudents').innerHTML=d.students.map((s,i)=>{
       const rnk=rank(s.score);
-      return `<div class="public-row lobby-row ${i<3?'top':''}">
+      return `<div class="public-row lobby-row ${i<3&&s.eligible_leader?'top':''}">
         <div class="public-place">${place(i)}</div>
         <div class="public-student-info">
           <div class="public-name">${esc(s.name)}</div>
-          <div class="public-class">${esc(s.class_name||'')}${rnk?` · <span class="public-rank">${rnk}</span>`:''}</div>
+          <div class="public-class">${esc(s.class_name||'')}${rnk?` · <span class="public-rank">${rnk}</span>`:''}${s.eligible_leader?'':' · טרם עומד בסף ההשתתפות'}</div>
         </div>
-        <div class="public-score">${s.score}</div>
+        <div class="public-score">${s.leadership_score}%<small style="display:block;font-size:12px;font-weight:400">${s.score} נק׳</small></div>
       </div>`;
     }).join('');
   }catch(e){
