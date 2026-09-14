@@ -33,8 +33,7 @@ async function sendWhatsApp(u,appUrl){
     messaging_product:'whatsapp',to,type:'template',
     template:{name:template,language:{code:language},
       components:[{type:'body',parameters:[
-        {type:'text',text:String(u.name||'')},
-        {type:'text',text:appUrl}
+        {type:'text',text:String(u.name||'')}
       ]}]
     }
   };
