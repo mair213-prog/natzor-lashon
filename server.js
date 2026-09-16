@@ -17,6 +17,47 @@ const pool = new Pool({
 
 app.use(express.json());
 app.use(cookieParser());
+
+// WhatsApp Cloud API webhook: verification + delivery-status diagnostics.
+// Configure WHATSAPP_WEBHOOK_VERIFY_TOKEN in Render and use the same value in Meta.
+app.get('/api/webhooks/whatsapp', (req,res)=>{
+  const mode=String(req.query['hub.mode']||'');
+  const token=String(req.query['hub.verify_token']||'');
+  const challenge=String(req.query['hub.challenge']||'');
+  const expected=String(process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN||'');
+  if(mode==='subscribe' && expected && token===expected){
+    console.log('WhatsApp webhook verified by Meta');
+    return res.status(200).type('text/plain').send(challenge);
+  }
+  console.warn('WhatsApp webhook verification rejected',{mode,tokenPresent:!!token,configured:!!expected});
+  return res.sendStatus(403);
+});
+
+app.post('/api/webhooks/whatsapp', (req,res)=>{
+  // Acknowledge first-class Cloud API webhook payloads and log only delivery diagnostics.
+  // Do not log the full payload because it can contain message/user content.
+  try{
+    const entries=Array.isArray(req.body?.entry)?req.body.entry:[];
+    for(const entry of entries){
+      const changes=Array.isArray(entry?.changes)?entry.changes:[];
+      for(const change of changes){
+        const statuses=Array.isArray(change?.value?.statuses)?change.value.statuses:[];
+        for(const st of statuses){
+          const errors=Array.isArray(st?.errors)?st.errors.map(e=>({code:e?.code,title:e?.title,message:e?.message,error_data:e?.error_data})):[];
+          console.log('WhatsApp delivery status',{
+            messageId:st?.id||null,
+            status:st?.status||null,
+            timestamp:st?.timestamp||null,
+            errors
+          });
+        }
+      }
+    }
+  }catch(e){
+    console.error('WhatsApp webhook parse error',e?.message||e);
+  }
+  return res.sendStatus(200);
+});
 app.use(express.static(path.join(__dirname,'public')));
 
 const JWT_SECRET = process.env.JWT_SECRET;
