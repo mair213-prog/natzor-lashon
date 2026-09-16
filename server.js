@@ -69,7 +69,7 @@ function validManagementPassword(value){
 function signUser(u){return jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role},JWT_SECRET,{expiresIn:'12h'})}
 function auth(req,res,next){try{const token=req.cookies.natzor_token;if(!token)return res.status(401).json({error:'not_authenticated'});req.user=jwt.verify(token,JWT_SECRET);next()}catch{res.status(401).json({error:'not_authenticated'})}}
 function admin(req,res,next){if(req.user?.role!=='admin')return res.status(403).json({error:'admin_only'});next()}
-function cookieOpts(){return {httpOnly:true,sameSite:'strict',secure:process.env.NODE_ENV==='production',maxAge:12*60*60*1000}}
+function cookieOpts(remember=false){const base={httpOnly:true,sameSite:'strict',secure:process.env.NODE_ENV==='production'};return remember?{...base,maxAge:30*24*60*60*1000}:base}
 
 const DEFAULT_CAMPAIGN_RULES = "בישיבת נחלת יעקב בוחרים לדבר נקי.\n\nבמשך חודש שלם אנחנו שמים את הדיבור במרכז, מתחזקים יחד בשפה נקייה ומכבדים זה את זה בכל זמן ובכל מקום.\n\nאיך צוברים נקודות?\nבכל יום מתקיימים שני זמני לימוד קצרים בנושא שמירת הלשון: 10 דקות לפני מנחה בבית המדרש, ו־10 דקות במהלך סדר \"והגית\". המחנך מדווח על הלימוד בצהריים, והמדריך מדווח על הלימוד בערב.\n\nעל כל דיווח חיובי התלמיד מקבל 3 נקודות. ניתן לקבל דיווח חיובי פעם אחת ביום בלימודים ופעם אחת ביום בפנימייה, ולכן כל תלמיד יכול לצבור עד 6 נקודות רגילות ביום. לאחר דיווח חיובי האפשרות ננעלת באותו תחום עד ליום המחרת.\n\nממשיכים לצבור – ומקבלים בונוס:\nעל כל 20 דיווחים חיוביים שנצברו במבצע, התלמיד מקבל בונוס נוסף של 5 נקודות.\n\nשומרים על שפה נקייה:\nכאשר תלמיד אינו שומר על דיבור נקי, כל איש צוות ששמע את הדברים רשאי לבצע דיווח שלילי. כל דיווח שלילי מוריד נקודה אחת, וניתן לבצע דיווח שלילי נוסף לאחר 5 דקות.\n\nהמטרה שלנו היא לא רק לצבור נקודות, אלא ליצור בישיבת נחלת יעקב אווירה של דיבור נקי, מכבד וטוב.\n\nבסיום חודש המבצע, התלמידים שיעמדו ביעד שנקבע יזכו לצאת יחד לטיול שווה.\n\nנצור לשונך – בוחרים לדבר נקי.";
 
@@ -91,6 +91,8 @@ async function ensureV8Schema(){
     ON CONFLICT(setting_key) DO NOTHING`);
   await pool.query(`INSERT INTO app_settings(setting_key,setting_value) VALUES('campaign_rules_html','') ON CONFLICT(setting_key) DO NOTHING`);
   await pool.query(`UPDATE users SET reminder_email_enabled=TRUE,reminder_whatsapp_enabled=FALSE WHERE COALESCE(reminder_email_enabled,FALSE)=FALSE AND COALESCE(reminder_whatsapp_enabled,FALSE)=FALSE`);
+  // WhatsApp reminders are intentionally disabled. Preserve reminder on/off state and move active WhatsApp reminders to email.
+  await pool.query(`UPDATE users SET reminder_email_enabled=TRUE,reminder_whatsapp_enabled=FALSE WHERE COALESCE(reminder_whatsapp_enabled,FALSE)=TRUE`);
 }
 
 function sanitizeCampaignHtml(input){
@@ -192,10 +194,10 @@ async function pairedGroup(client,gid){
 }
 
 app.post('/api/auth/login',async(req,res)=>{
-  const email=String(req.body.email||'').trim().toLowerCase(),password=String(req.body.password||'');
+  const email=String(req.body.email||'').trim().toLowerCase(),password=String(req.body.password||''),remember=!!req.body.remember;
   const {rows}=await pool.query('SELECT * FROM users WHERE email=$1 AND active=true',[email]);
   if(!rows[0]||!(await bcrypt.compare(password,rows[0].password_hash)))return res.status(401).json({error:'פרטי התחברות שגויים'});
-  const u=rows[0];res.cookie('natzor_token',signUser(u),cookieOpts()).json({id:u.id,name:u.name,email:u.email,role:u.role});
+  const u=rows[0];res.cookie('natzor_token',signUser(u),cookieOpts(remember)).json({id:u.id,name:u.name,email:u.email,role:u.role});
 });
 app.post('/api/auth/logout',(req,res)=>res.clearCookie('natzor_token',cookieOpts()).json({ok:true}));
 app.get('/api/me',auth,async(req,res)=>{
@@ -216,13 +218,13 @@ app.put('/api/me/password',auth,async(req,res)=>{
 
 app.put('/api/me/reminder',auth,async(req,res)=>{
   const channel=String(req.body.channel||''),time=String(req.body.time||'').trim();
-  if(!['email','whatsapp'].includes(channel))return res.status(400).json({error:'חובה לבחור אימייל או WhatsApp'});
+  if(channel!=='email')return res.status(400).json({error:'WhatsApp מושבת כרגע. יש לבחור אימייל'});
   if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
   const {rows:users}=await pool.query('SELECT email,whatsapp_phone FROM users WHERE id=$1',[req.user.id]);
   const u=users[0];if(!u)return res.status(404).json({error:'משתמש לא נמצא'});
   if(channel==='email'&&!u.email)return res.status(400).json({error:'לא מוגדרת כתובת אימייל'});
-  if(channel==='whatsapp'&&!u.whatsapp_phone)return res.status(400).json({error:'לא מוגדר מספר WhatsApp. פנה למנהל לעדכון המספר'});
-  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=TRUE,reminder_email_enabled=$1,reminder_whatsapp_enabled=$2,reminder_time=$3,reminder_timezone='Asia/Jerusalem' WHERE id=$4 RETURNING reminder_time,reminder_email_enabled,reminder_whatsapp_enabled`,[channel==='email',channel==='whatsapp',time,req.user.id]);
+  
+  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=TRUE,reminder_email_enabled=$1,reminder_whatsapp_enabled=$2,reminder_time=$3,reminder_timezone='Asia/Jerusalem' WHERE id=$4 RETURNING reminder_time,reminder_email_enabled,reminder_whatsapp_enabled`,[true,false,time,req.user.id]);
   res.json(rows[0]);
 });
 
@@ -547,14 +549,15 @@ app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{
   const id=Number(req.params.id),time=String(req.body.time||'').trim();
   const enabled=req.body.enabled!==false;
   const emailEnabled=!!req.body.email_enabled,whatsappEnabled=!!req.body.whatsapp_enabled;
-  if(enabled&&emailEnabled===whatsappEnabled)return res.status(400).json({error:'כאשר התזכורת פעילה חובה לבחור דרך אחת: אימייל או WhatsApp'});
+  if(whatsappEnabled)return res.status(400).json({error:'WhatsApp מושבת כרגע'});
+  if(enabled&&!emailEnabled)return res.status(400).json({error:'כאשר התזכורת פעילה יש לבחור אימייל'});
   if(enabled&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
   const {rows:check}=await pool.query('SELECT email,whatsapp_phone FROM users WHERE id=$1',[id]);
   if(!check[0])return res.status(404).json({error:'משתמש לא נמצא'});
   if(enabled&&emailEnabled&&!check[0].email)return res.status(400).json({error:'למשתמש אין כתובת אימייל'});
-  if(enabled&&whatsappEnabled&&!check[0].whatsapp_phone)return res.status(400).json({error:'למשתמש אין מספר WhatsApp'});
+  
   const safeTime=/^([01]\d|2[0-3]):[0-5]\d$/.test(time)?time:'20:00';
-  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=$1,reminder_email_enabled=$2,reminder_whatsapp_enabled=$3,reminder_time=$4,reminder_timezone='Asia/Jerusalem' WHERE id=$5 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[enabled,enabled&&emailEnabled,enabled&&whatsappEnabled,safeTime,id]);
+  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=$1,reminder_email_enabled=$2,reminder_whatsapp_enabled=$3,reminder_time=$4,reminder_timezone='Asia/Jerusalem' WHERE id=$5 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[enabled,enabled&&emailEnabled,false,safeTime,id]);
   res.json(rows[0]);
 });
 
