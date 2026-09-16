@@ -447,6 +447,9 @@ header{padding-top:calc(24px + env(safe-area-inset-top,0px));padding-bottom:16px
 .remember-login{display:flex;align-items:center;gap:8px;width:max-content;font-weight:700;color:#344054;cursor:pointer}.remember-login input{width:18px;height:18px}
 .permissions-root{margin-top:12px}.permission-sub{margin-top:8px}.permissions-root>.collapsible-body{background:#fbfcfe}.permission-sub>.collapsible-body{padding-top:8px}.permission-sub .bulk-permissions{margin-top:0}
 @media(max-width:650px){
-  .lobby-shell{padding-top:calc(34px + env(safe-area-inset-top,0px))!important}
+  .lobby-shell{padding-top:0!important}
+  .lobby-top{padding-top:calc(34px + env(safe-area-inset-top,0px))!important}
   .lobby-brand .results-logo{line-height:1.08}
 }
+
+.recommended-push{border-color:#b9dec7!important;background:#effaf3!important}.recommended-push:has(input:checked){box-shadow:0 0 0 2px #b9dec7 inset}

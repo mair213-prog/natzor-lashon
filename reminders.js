@@ -1,5 +1,21 @@
 import nodemailer from 'nodemailer';
 
+let firebaseAdminPromise=null;
+async function firebaseAdmin(){
+  if(firebaseAdminPromise)return firebaseAdminPromise;
+  firebaseAdminPromise=(async()=>{try{const raw=process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;if(!raw)return null;const serviceAccount=JSON.parse(Buffer.from(raw,'base64').toString('utf8'));const mod=await import('firebase-admin');const admin=mod.default||mod;if(!admin.apps.length)admin.initializeApp({credential:admin.credential.cert(serviceAccount)});return admin}catch(e){console.error('Reminder Firebase init failed',e);return null}})();
+  return firebaseAdminPromise;
+}
+async function sendPushReminder(pool,u){
+  const {rows}=await pool.query('SELECT token FROM fcm_tokens WHERE user_id=$1',[u.id]);
+  const tokens=rows.map(r=>r.token).filter(Boolean);if(!tokens.length)throw new Error(`No FCM token for user ${u.id}`);
+  const admin=await firebaseAdmin();if(!admin)throw new Error('Firebase Admin is not configured');
+  const title='תזכורת יומית – נצור לשונך',body=`שלום ${u.name}, הגיע הזמן לעדכן את הדיווחים להיום.`;
+  let sent=0;
+  for(let i=0;i<tokens.length;i+=500){const batch=tokens.slice(i,i+500);const r=await admin.messaging().sendEachForMulticast({tokens:batch,data:{title,body,url:'/'},android:{priority:'high'}});sent+=r.successCount;for(let j=0;j<r.responses.length;j++){const x=r.responses[j];if(!x.success&&['messaging/registration-token-not-registered','messaging/invalid-registration-token'].includes(x.error?.code))await pool.query('DELETE FROM fcm_tokens WHERE token=$1',[batch[j]]).catch(()=>{})}}
+  return sent;
+}
+
 function localParts(timeZone='Asia/Jerusalem'){
   const parts=new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
   const o=Object.fromEntries(parts.map(p=>[p.type,p.value]));
@@ -58,9 +74,9 @@ async function sendWhatsApp(u,appUrl){
 }
 export async function sendDueReminders(pool){
   const {rows}=await pool.query(`SELECT id,name,email,whatsapp_phone,reminder_time,reminder_timezone,reminder_last_sent_date,
-    reminder_email_enabled,reminder_whatsapp_enabled
+    reminder_email_enabled,reminder_push_enabled,reminder_whatsapp_enabled
     FROM users WHERE active=true AND reminder_enabled=true AND reminder_time IS NOT NULL`);
-  let sent=0,emailSent=0,whatsappSent=0;
+  let sent=0,emailSent=0,pushSent=0,whatsappSent=0;
   for(const u of rows){
     const now=localParts(u.reminder_timezone||'Asia/Jerusalem'), rt=String(u.reminder_time).slice(0,5);
     const diff=mins(now.time)-mins(rt);
@@ -68,7 +84,7 @@ export async function sendDueReminders(pool){
     const last=u.reminder_last_sent_date?String(u.reminder_last_sent_date).slice(0,10):'';
     if(last===now.date) continue;
     const appUrl=process.env.APP_URL||'https://natzor-lashon.onrender.com';
-    if(u.reminder_email_enabled!==false){
+    if(u.reminder_email_enabled){
       const transporter=mailer();
       await transporter.sendMail({
         from:process.env.MAIL_FROM,to:u.email,subject:'תזכורת יומית – נצור לשונך',
@@ -76,9 +92,10 @@ export async function sendDueReminders(pool){
         html:`<div dir="rtl" style="font-family:Arial,sans-serif"><h2>תזכורת יומית – נצור לשונך</h2><p>שלום ${String(u.name).replace(/[<>&"]/g,'')},</p><p>זו תזכורת יומית להיכנס למערכת ולבצע דיווח.</p><p><a href="${appUrl}">כניסה למערכת</a></p><p><b>בוחרים לדבר נקי</b></p></div>`
       }); emailSent++;
     }
+    if(u.reminder_push_enabled){pushSent+=await sendPushReminder(pool,u)}
     if(u.reminder_whatsapp_enabled){await sendWhatsApp(u,appUrl);whatsappSent++}
     await pool.query('UPDATE users SET reminder_last_sent_date=$1 WHERE id=$2',[now.date,u.id]);
     sent++;
   }
-  return {sent,emailSent,whatsappSent};
+  return {sent,emailSent,pushSent,whatsappSent};
 }

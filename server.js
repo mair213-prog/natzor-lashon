@@ -77,6 +77,7 @@ async function ensureV8Schema(){
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_phone TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_email_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_whatsapp_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_push_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
   await pool.query(`CREATE TABLE IF NOT EXISTS app_settings (
     setting_key TEXT PRIMARY KEY,
     setting_value TEXT NOT NULL,
@@ -201,7 +202,7 @@ app.post('/api/auth/login',async(req,res)=>{
 });
 app.post('/api/auth/logout',(req,res)=>res.clearCookie('natzor_token',cookieOpts()).json({ok:true}));
 app.get('/api/me',auth,async(req,res)=>{
-  const {rows}=await pool.query(`SELECT id,name,email,whatsapp_phone,role,active,reminder_time,reminder_timezone,reminder_email_enabled,reminder_whatsapp_enabled FROM users WHERE id=$1`,[req.user.id]);
+  const {rows}=await pool.query(`SELECT id,name,email,whatsapp_phone,role,active,reminder_time,reminder_timezone,reminder_email_enabled,reminder_push_enabled,reminder_whatsapp_enabled FROM users WHERE id=$1`,[req.user.id]);
   if(!rows[0])return res.status(404).json({error:'משתמש לא נמצא'});
   res.json(rows[0]);
 });
@@ -218,13 +219,13 @@ app.put('/api/me/password',auth,async(req,res)=>{
 
 app.put('/api/me/reminder',auth,async(req,res)=>{
   const channel=String(req.body.channel||''),time=String(req.body.time||'').trim();
-  if(channel!=='email')return res.status(400).json({error:'WhatsApp מושבת כרגע. יש לבחור אימייל'});
+  if(!['email','push'].includes(channel))return res.status(400).json({error:'WhatsApp מושבת כרגע. יש לבחור אימייל או Push'});
   if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
   const {rows:users}=await pool.query('SELECT email,whatsapp_phone FROM users WHERE id=$1',[req.user.id]);
   const u=users[0];if(!u)return res.status(404).json({error:'משתמש לא נמצא'});
   if(channel==='email'&&!u.email)return res.status(400).json({error:'לא מוגדרת כתובת אימייל'});
-  
-  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=TRUE,reminder_email_enabled=$1,reminder_whatsapp_enabled=$2,reminder_time=$3,reminder_timezone='Asia/Jerusalem' WHERE id=$4 RETURNING reminder_time,reminder_email_enabled,reminder_whatsapp_enabled`,[true,false,time,req.user.id]);
+  if(channel==='push'){const q=await pool.query('SELECT 1 FROM fcm_tokens WHERE user_id=$1 LIMIT 1',[req.user.id]);if(!q.rows[0])return res.status(400).json({error:'לא נמצא מכשיר Android רשום להתראות. יש לאשר התראות באפליקציה ולנסות שוב'});}
+  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=TRUE,reminder_email_enabled=$1,reminder_push_enabled=$2,reminder_whatsapp_enabled=FALSE,reminder_time=$3,reminder_timezone='Asia/Jerusalem' WHERE id=$4 RETURNING reminder_time,reminder_email_enabled,reminder_push_enabled,reminder_whatsapp_enabled`,[channel==='email',channel==='push',time,req.user.id]);
   res.json(rows[0]);
 });
 
@@ -348,7 +349,7 @@ app.get('/api/public/results',async(req,res)=>{
 app.get('/api/admin/dashboard',auth,admin,async(req,res)=>{
   const [students,users,reports,summary,period]=await Promise.all([
     pool.query('SELECT * FROM students WHERE active=true ORDER BY name'),
-    pool.query(`SELECT u.id,u.name,u.email,u.whatsapp_phone,u.role,u.active,u.reminder_enabled,u.reminder_email_enabled,u.reminder_whatsapp_enabled,u.reminder_time,u.reminder_timezone,u.reminder_last_sent_date,COALESCE(json_agg(ug.group_id) FILTER(WHERE ug.group_id IS NOT NULL),'[]') group_ids FROM users u LEFT JOIN user_groups ug ON ug.user_id=u.id GROUP BY u.id ORDER BY u.name`),
+    pool.query(`SELECT u.id,u.name,u.email,u.whatsapp_phone,u.role,u.active,u.reminder_enabled,u.reminder_email_enabled,u.reminder_push_enabled,u.reminder_whatsapp_enabled,u.reminder_time,u.reminder_timezone,u.reminder_last_sent_date,COALESCE(json_agg(ug.group_id) FILTER(WHERE ug.group_id IS NOT NULL),'[]') group_ids FROM users u LEFT JOIN user_groups ug ON ug.user_id=u.id GROUP BY u.id ORDER BY u.name`),
     pool.query(`SELECT r.id,s.name student_name,u.name reporter_name,r.report_type,r.area,r.created_at FROM reports r JOIN students s ON s.id=r.student_id JOIN users u ON u.id=r.reporter_id WHERE r.period_id=(SELECT id FROM score_periods WHERE active=true LIMIT 1) ORDER BY r.created_at DESC LIMIT 200`),
     pool.query(`SELECT COUNT(*)::int reports,COUNT(*) FILTER(WHERE report_type='plus')::int plus,COUNT(*) FILTER(WHERE report_type='minus')::int minus FROM reports WHERE period_id=(SELECT id FROM score_periods WHERE active=true LIMIT 1)`),
     pool.query('SELECT * FROM score_periods WHERE active=true ORDER BY id DESC LIMIT 1')
@@ -548,16 +549,17 @@ app.put('/api/admin/users/:id/whatsapp',auth,admin,async(req,res)=>{const id=Num
 app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{
   const id=Number(req.params.id),time=String(req.body.time||'').trim();
   const enabled=req.body.enabled!==false;
-  const emailEnabled=!!req.body.email_enabled,whatsappEnabled=!!req.body.whatsapp_enabled;
+  const emailEnabled=!!req.body.email_enabled,pushEnabled=!!req.body.push_enabled,whatsappEnabled=!!req.body.whatsapp_enabled;
   if(whatsappEnabled)return res.status(400).json({error:'WhatsApp מושבת כרגע'});
-  if(enabled&&!emailEnabled)return res.status(400).json({error:'כאשר התזכורת פעילה יש לבחור אימייל'});
+  if(enabled&&!emailEnabled&&!pushEnabled)return res.status(400).json({error:'כאשר התזכורת פעילה יש לבחור אימייל או Push'});
   if(enabled&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))return res.status(400).json({error:'יש לבחור שעה תקינה'});
   const {rows:check}=await pool.query('SELECT email,whatsapp_phone FROM users WHERE id=$1',[id]);
   if(!check[0])return res.status(404).json({error:'משתמש לא נמצא'});
   if(enabled&&emailEnabled&&!check[0].email)return res.status(400).json({error:'למשתמש אין כתובת אימייל'});
+  if(enabled&&pushEnabled){const q=await pool.query('SELECT 1 FROM fcm_tokens WHERE user_id=$1 LIMIT 1',[id]);if(!q.rows[0])return res.status(400).json({error:'לאיש הצוות אין מכשיר Android רשום ל-Push. עליו להתחבר באפליקציה ולאשר התראות'});}
   
   const safeTime=/^([01]\d|2[0-3]):[0-5]\d$/.test(time)?time:'20:00';
-  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=$1,reminder_email_enabled=$2,reminder_whatsapp_enabled=$3,reminder_time=$4,reminder_timezone='Asia/Jerusalem' WHERE id=$5 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[enabled,enabled&&emailEnabled,false,safeTime,id]);
+  const {rows}=await pool.query(`UPDATE users SET reminder_enabled=$1,reminder_email_enabled=$2,reminder_push_enabled=$3,reminder_whatsapp_enabled=$4,reminder_time=$5,reminder_timezone='Asia/Jerusalem' WHERE id=$6 RETURNING id,reminder_enabled,reminder_email_enabled,reminder_push_enabled,reminder_whatsapp_enabled,reminder_time,reminder_timezone`,[enabled,enabled&&emailEnabled,enabled&&pushEnabled,false,safeTime,id]);
   res.json(rows[0]);
 });
 
@@ -569,13 +571,14 @@ app.delete('/api/admin/users/:uid/groups/:gid',auth,admin,async(req,res)=>{await
 
 app.post('/api/admin/users/:id/reminder/send-now',auth,admin,async(req,res)=>{
   const id=Number(req.params.id);
-  const {rows}=await pool.query(`SELECT id,name,email,whatsapp_phone,active,reminder_email_enabled,reminder_whatsapp_enabled FROM users WHERE id=$1`,[id]);
+  const {rows}=await pool.query(`SELECT id,name,email,whatsapp_phone,active,reminder_email_enabled,reminder_push_enabled,reminder_whatsapp_enabled FROM users WHERE id=$1`,[id]);
   const u=rows[0];
   if(!u)return res.status(404).json({error:'משתמש לא נמצא'});
   if(!u.active)return res.status(400).json({error:'המשתמש אינו פעיל'});
   const appUrl=process.env.APP_URL||'https://natzor-lashon.onrender.com';
   const channels=[];
-  if(u.reminder_email_enabled!==false) channels.push('email');
+  if(u.reminder_email_enabled) channels.push('email');
+  if(u.reminder_push_enabled) channels.push('push');
   if(u.reminder_whatsapp_enabled) channels.push('whatsapp');
   if(!channels.length)return res.status(400).json({error:'לא נבחרה דרך תזכורת'});
   try{
