@@ -460,6 +460,16 @@ async function studentCurrentScore(studentId,periodId){
   const plus=Number(rq.rows[0]?.plus_count||0), minus=Number(rq.rows[0]?.minus_count||0), adjustment=Number(aq.rows[0]?.adjustment||0);
   return plus*3-minus+Math.floor(plus/20)*5+adjustment;
 }
+app.get('/api/admin/score-management/scores',auth,admin,async(req,res)=>{
+  const pid=await activePeriodId();
+  const {rows}=await pool.query(`SELECT s.id,
+    (COALESCE(r.plus_count,0)*3-COALESCE(r.minus_count,0)+FLOOR(COALESCE(r.plus_count,0)/20.0)*5+COALESCE(a.adjustment,0))::int score
+    FROM students s
+    LEFT JOIN (SELECT student_id,COUNT(*) FILTER(WHERE report_type='plus')::int plus_count,COUNT(*) FILTER(WHERE report_type='minus')::int minus_count FROM reports WHERE period_id=$1 GROUP BY student_id) r ON r.student_id=s.id
+    LEFT JOIN (SELECT student_id,COALESCE(SUM(delta),0)::int adjustment FROM score_adjustments WHERE period_id=$1 GROUP BY student_id) a ON a.student_id=s.id
+    WHERE s.active=true ORDER BY s.id`,[pid]);
+  res.json(rows);
+});
 app.get('/api/admin/score-management/students',auth,admin,async(req,res)=>{const pid=await activePeriodId();const q=String(req.query.q||'').trim();const {rows}=await pool.query(`SELECT s.id,s.name,COALESCE((SELECT g.name FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE gs.student_id=s.id AND g.type='class' AND g.active=true ORDER BY g.name LIMIT 1),'') group_name FROM students s WHERE s.active=true AND ($1='' OR s.name ILIKE '%'||$1||'%') ORDER BY s.name LIMIT 30`,[q]);for(const r of rows)r.score=await studentCurrentScore(r.id,pid);res.json(rows)});
 app.get('/api/admin/score-management/student/:id',auth,admin,async(req,res)=>{const sid=Number(req.params.id);if(!sid)return res.status(400).json({error:'תלמיד לא תקין'});const pid=await activePeriodId();const {rows}=await pool.query(`SELECT s.id,s.name,COALESCE((SELECT g.name FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE gs.student_id=s.id AND g.type='class' AND g.active=true ORDER BY g.name LIMIT 1),'') group_name FROM students s WHERE s.id=$1 AND s.active=true LIMIT 1`,[sid]);if(!rows[0])return res.status(404).json({error:'התלמיד לא נמצא'});rows[0].score=await studentCurrentScore(sid,pid);res.json(rows[0])});
 app.get('/api/admin/score-management/:id/history',auth,admin,async(req,res)=>{const pid=await activePeriodId();const {rows}=await pool.query(`SELECT a.id,a.delta,a.reason,a.action_type,a.created_at,u.name admin_name FROM score_adjustments a LEFT JOIN users u ON u.id=a.admin_user_id WHERE a.student_id=$1 AND a.period_id=$2 ORDER BY a.id DESC LIMIT 30`,[Number(req.params.id),pid]);res.json(rows)});

@@ -1,7 +1,7 @@
 function rankInfo(score){const n=Number(score||0);if(n>=150)return ['🏆','אלוף נצור לשונך','positive'];if(n>=120)return ['⭐','מוביל שפה נקייה','positive'];if(n>=90)return ['🛡️','מגן הדיבור','positive'];if(n>=60)return ['💬','נאמן הלשון','positive'];if(n>=30)return ['🌱','שומר המילה','positive'];if(n<=-100)return ['🛑','דורש שינוי','negative'];if(n<=-80)return ['🚦','עצירה וחשיבה','negative'];if(n<=-60)return ['🧭','חוזר למסלול','negative'];if(n<=-40)return ['🔄','מתחזק בדיבור','negative'];if(n<=-20)return ['⚠️','בדרך לתיקון','negative'];return null}
 function rankBadge(score){const r=rankInfo(score);return r?`<span class="rank-badge ${r[2]}">${r[0]} ${r[1]}</span>`:''}
 let me=null, area='class', groups=[], currentGroup=null, cooldownTimer=null, leadingGroupName='';
-let adminData=null, adminGroupsData=[], adminRankings=[], adminWeekly=null, adminPeriods=[], adminDaily=[], adminSection='data', adminManageSection='students';
+let adminData=null, adminGroupsData=[], adminRankings=[], adminWeekly=null, adminPeriods=[], adminDaily=[], adminScoreMap={}, adminSection='data', adminManageSection='students';
 let adminReportArea='class', adminReportGroups=[], adminReportGroup=null;
 let engagementChallenges=[], engagementAnnouncements=[], pushStats={total:0,study:0,dorm:0,admin:0,web:0,android:0}, pushInboxTimer=null, pushQueue=[], pushQueueIds=new Set(), pushShowing=false;
 const $=x=>document.getElementById(x);
@@ -61,7 +61,7 @@ function reportStudentsHtml(rows,title,prefix=''){return `<div class="panel"><h2
 function studentCard(s,prefix=''){return `<div class="student"><div><div class="student-name-line"><b class="student-link" onclick="openStudentProfile(${s.id})">${esc(s.name)}</b>${rankBadge(s.score)}</div><div class="small">ניקוד: ${s.score}${s.bonus?` · כולל בונוס ${s.bonus}+`:''}</div></div><div class="actions"><button id="${prefix}minus_${s.id}" class="minus" data-until="${s.minus_locked_until||''}" ${s.minus_locked?'disabled':''} onclick="${prefix?'adminReport':'report'}(${s.id},'minus')">−</button><span class="score">${s.score}</span><button id="${prefix}plus_${s.id}" class="plus" data-until="${s.plus_locked_until||''}" data-daily="${s.plus_locked?'1':''}" ${s.plus_locked?'disabled':''} onclick="${prefix?'adminReport':'report'}(${s.id},'plus')">+</button></div></div>`}
 function startCooldownClock(){if(cooldownTimer)clearInterval(cooldownTimer);const tick=()=>document.querySelectorAll('button[data-until]').forEach(btn=>{if(btn.dataset.daily==='1'){btn.disabled=true;btn.title='השתתפות בשיעורים כבר דווחה היום באזור זה';return}const until=btn.dataset.until;if(!until){btn.title='';return}const ms=new Date(until).getTime()-Date.now();if(ms<=0){btn.disabled=false;btn.dataset.until='';btn.title='';return}const sec=Math.ceil(ms/1000),m=Math.floor(sec/60),r=String(sec%60).padStart(2,'0');btn.disabled=true;btn.title=`אפשר שוב בעוד ${m}:${r}`});tick();cooldownTimer=setInterval(tick,1000)}
 async function report(studentId,type){playSound(type);const y=window.scrollY;try{const r=await api('/api/reports',{method:'POST',body:JSON.stringify({studentId,type,area})});showUndo(r.id);await Promise.all([loadStudents(),loadLeader()]);requestAnimationFrame(()=>window.scrollTo(0,y))}catch(e){alert(e.message);await loadStudents();requestAnimationFrame(()=>window.scrollTo(0,y))}}
-async function loadAdminAll(){[adminData,adminGroupsData,adminRankings,adminWeekly,adminPeriods,adminDaily]=await Promise.all([api('/api/admin/dashboard'),api('/api/admin/groups'),api('/api/admin/class-rankings'),api('/api/admin/weekly'),api('/api/admin/periods'),api('/api/admin/daily-summary')])}
+async function loadAdminAll(){const [d,g,r,w,p,dy,scores]=await Promise.all([api('/api/admin/dashboard'),api('/api/admin/groups'),api('/api/admin/class-rankings'),api('/api/admin/weekly'),api('/api/admin/periods'),api('/api/admin/daily-summary'),api('/api/admin/score-management/scores')]);adminData=d;adminGroupsData=g;adminRankings=r;adminWeekly=w;adminPeriods=p;adminDaily=dy;adminScoreMap={};(scores||[]).forEach(x=>adminScoreMap[Number(x.id)]=Number(x.score||0))}
 async function openAdmin(section='data'){playSound('nav');$('reporting').classList.add('hidden');$('admin').classList.remove('hidden');$('classTab').classList.remove('active');$('dormTab').classList.remove('active');$('adminTab').classList.add('active');adminSection=section;await loadAdminAll();renderAdmin()}
 function renderAdmin(){$('admin').innerHTML=`<div class="panel admin-shell"><div class="admin-tabs"><button class="btn ${adminSection==='data'?'active':''}" onclick="switchAdmin('data')">📊 הצגת נתונים</button><button class="btn ${adminSection==='manage'?'active':''}" onclick="switchAdmin('manage')">⚙️ ניהול</button></div></div><div id="adminContent"></div>`;renderAdminContent()}
 async function switchAdmin(s){playSound('nav');adminSection=s;renderAdmin()}
@@ -192,7 +192,7 @@ async function saveCampaignRules(){const ed=$('campaignRulesEditor');if(!ed)retu
 
 function adminPeriodsView(){return `<div class="panel score-period-panel"><h2>🗓️ תקופות ניקוד</h2><div class="small">פתיחת תקופה חדשה שומרת את כל התקופות והדיווחים הקודמים. ניתן לבחור תאריך התחלה ולראות נתונים מכל תקופה.</div><div class="score-period-create"><input id="newPeriodName" class="input" placeholder="שם התקופה"><input id="newPeriodDate" class="input" type="date" value="${new Date().toISOString().slice(0,10)}"><button class="btn ok" onclick="startNewPeriod()">פתח תקופה חדשה</button></div><div class="period-list rich-period-list">${adminPeriods.slice(0,12).map(p=>`<div class="period-row ${p.active?'active-period':''}"><div class="grow"><b>${p.active?'🟢 ':''}${esc(p.name)}</b><div class="small">התחלה: ${new Date(p.started_at).toLocaleDateString('he-IL')}${p.ended_at?' · סיום: '+new Date(p.ended_at).toLocaleDateString('he-IL'):''}</div><div class="small">${Number(p.reports||0)} דיווחים · ${Number(p.students||0)} תלמידים · התאמות ידניות: ${Number(p.manual_adjustments||0)>=0?'+':''}${Number(p.manual_adjustments||0)}</div></div><button class="btn mini" onclick="renamePeriod(${p.id},'${escAttr(p.name)}')">שנה שם</button></div>`).join('')}</div></div>`}
 let scoreSearchTimer=null,scoreSelectedStudent=null;
-function scoreStudentEditorShell(id,name,group){return `<div class="score-editor-card inline"><div class="score-editor-head"><div><h3>${esc(name)}</h3><div class="small">${esc(group||'ללא קבוצה')}</div></div><div class="score-current"><span>ניקוד נוכחי</span><b>…</b></div></div><div class="small score-live-status">טוען את הניקוד הנוכחי ברקע…</div><label class="small">מספר נקודות</label><input class="input score-delta-input" type="number" step="1" placeholder="למשל 10"><label class="small">סיבת השינוי (מומלץ)</label><input class="input score-reason-input" maxlength="300" placeholder="למשל: תיקון דיווח / בונוס מיוחד"><div class="score-actions"><button class="btn ok" onclick="doScoreAdjustFor(this,${id},'${escAttr(name)}','${escAttr(group||'')}',1)">➕ הוסף נקודות</button><button class="btn danger" onclick="doScoreAdjustFor(this,${id},'${escAttr(name)}','${escAttr(group||'')}',-1)">➖ הפחת נקודות</button><button class="btn warning score-reset-btn" onclick="resetStudentScoreFor(this,${id},'${escAttr(name)}','${escAttr(group||'')}')" disabled>↺ אפס ניקוד</button></div><div class="score-history-host"></div></div>`}
+function scoreStudentEditorShell(id,name,group){const initial=Object.prototype.hasOwnProperty.call(adminScoreMap,Number(id))?Number(adminScoreMap[Number(id)]):0;return `<div class="score-editor-card inline"><div class="score-editor-head"><div><h3>${esc(name)}</h3><div class="small">${esc(group||'ללא קבוצה')}</div></div><div class="score-current"><span>ניקוד נוכחי</span><b>${initial}</b></div></div><div class="small score-live-status">הניקוד מעודכן בזמן אמת</div><label class="small">מספר נקודות</label><input class="input score-delta-input" type="number" step="1" placeholder="למשל 10"><label class="small">סיבת השינוי (מומלץ)</label><input class="input score-reason-input" maxlength="300" placeholder="למשל: תיקון דיווח / בונוס מיוחד"><div class="score-actions"><button class="btn ok" onclick="doScoreAdjustFor(this,${id},'${escAttr(name)}','${escAttr(group||'')}',1)">➕ הוסף נקודות</button><button class="btn danger" onclick="doScoreAdjustFor(this,${id},'${escAttr(name)}','${escAttr(group||'')}',-1)">➖ הפחת נקודות</button><button class="btn warning score-reset-btn" onclick="resetStudentScoreFor(this,${id},'${escAttr(name)}','${escAttr(group||'')}')" disabled>↺ אפס ניקוד</button></div><div class="score-history-host"></div></div>`}
 function scoreStudentRow(m,g){return `<details class="score-student-accordion" data-score-student="${m.id}" ontoggle="if(this.open)openScoreStudentInline(this,${m.id},'${escAttr(m.name)}','${escAttr(g||'')}')"><summary><span class="score-student-person">👤</span><span class="grow"><b>${esc(m.name)}</b></span><span class="modern-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span></summary><div class="score-inline-editor" id="scoreInline_${m.id}">${scoreStudentEditorShell(m.id,m.name,g||'')}</div></details>`}
 function adminScoreManagement(){
   const groups=(adminGroupsData||[]).filter(g=>g.type==='class');
@@ -206,18 +206,9 @@ async function searchScoreStudents(){const el=$('scoreStudentResults');if(!el)re
 async function openScoreStudentInline(details,id,name,group){
   if(!details.open)return;
   document.querySelectorAll('.score-student-accordion[open]').forEach(d=>{if(d!==details)d.open=false});
-  const el=details.querySelector('.score-inline-editor');
-  scoreSelectedStudent={id:Number(id),name:String(name||''),group:String(group||''),score:null};
-  // כלי העריכה כבר מוצגים מיד מתוך ה-HTML; כאן טוענים רק ניקוד והיסטוריה ברקע.
-  try{
-    const x=await api('/api/admin/score-management/student/'+id);
-    if(!details.open||!scoreSelectedStudent||Number(scoreSelectedStudent.id)!==Number(id))return;
-    scoreSelectedStudent={id:x.id,name:x.name,group:group||x.group_name||'',score:Number(x.score||0)};
-    updateOpenScoreEditorScore(details,scoreSelectedStudent.score);
-  }catch(e){
-    const msg=details.querySelector('.score-live-status');
-    if(msg){msg.textContent='לא ניתן לטעון את הניקוד הנוכחי כרגע. עדיין ניתן להוסיף או להפחית נקודות.';msg.classList.add('score-load-error')}
-  }
+  const initial=Object.prototype.hasOwnProperty.call(adminScoreMap,Number(id))?Number(adminScoreMap[Number(id)]):0;
+  scoreSelectedStudent={id:Number(id),name:String(name||''),group:String(group||''),score:initial};
+  updateOpenScoreEditorScore(details,initial);
   loadScoreHistoryInto(details,id);
 }
 function updateOpenScoreEditorScore(details,score){
@@ -253,6 +244,7 @@ async function doScoreAdjustFor(btn,id,name,group,sign){
   try{
     const r=await api('/api/admin/score-management/'+id+'/adjust',{method:'POST',body:JSON.stringify({mode:'adjust',delta,reason,management_password})});
     const after=Number(r.after);
+    adminScoreMap[Number(id)]=after;
     scoreSelectedStudent={id:Number(id),name:String(name),group:String(group||''),score:after};
     updateOpenScoreEditorScore(details,after);
     const inp=details?.querySelector('.score-delta-input');if(inp)inp.value='';
@@ -274,7 +266,7 @@ async function resetStudentScoreFor(btn,id,name,group){
   btn.disabled=true;const status=details?.querySelector('.score-live-status');if(status)status.textContent='מאפס ניקוד…';
   try{
     const r=await api('/api/admin/score-management/'+id+'/adjust',{method:'POST',body:JSON.stringify({mode:'reset',reason,management_password})});
-    const after=Number(r.after);scoreSelectedStudent={id:Number(id),name:String(name),group:String(group||''),score:after};
+    const after=Number(r.after);adminScoreMap[Number(id)]=after;scoreSelectedStudent={id:Number(id),name:String(name),group:String(group||''),score:after};
     updateOpenScoreEditorScore(details,after);loadScoreHistoryInto(details,id);Promise.all([loadAdminAll(),loadLeader()]).catch(()=>{});
   }catch(e){if(status){status.textContent='האיפוס נכשל';status.classList.add('score-load-error')}alert(e.message)}finally{btn.disabled=false}
 }
