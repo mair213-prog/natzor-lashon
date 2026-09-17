@@ -221,9 +221,11 @@ async function openScoreStudentInline(details,id,name,group){
   loadScoreHistoryInto(details,id);
 }
 function updateOpenScoreEditorScore(details,score){
-  const b=details?.querySelector('.score-current b');if(b)b.textContent=Number(score||0);
+  const n=Number(score||0);
+  const b=details?.querySelector('.score-current b');if(b)b.textContent=n;
+  if(details)details.dataset.currentScore=String(n);
   const reset=details?.querySelector('.score-reset-btn');if(reset)reset.disabled=false;
-  const st=details?.querySelector('.score-live-status');if(st)st.textContent='';
+  const st=details?.querySelector('.score-live-status');if(st){st.textContent='הניקוד מעודכן בזמן אמת';st.classList.remove('score-load-error')}
 }
 async function loadScoreHistoryInto(details,id){
   const box=details?.querySelector('.score-history-host');if(!box)return;
@@ -239,8 +241,43 @@ function renderScoreStudentCard(target){
   el.innerHTML=`<div class="score-editor-card inline"><div class="score-editor-head"><div><h3>${esc(x.name)}</h3><div class="small">${esc(x.group||'ללא קבוצה')}</div></div><div class="score-current"><span>ניקוד נוכחי</span><b>${known?Number(x.score):'…'}</b></div></div><div class="small score-live-status">${known?'':'טוען את הניקוד הנוכחי…'}</div><label class="small">מספר נקודות</label><input id="scoreDelta" class="input" type="number" step="1" placeholder="למשל 10"><label class="small">סיבת השינוי (מומלץ)</label><input id="scoreReason" class="input" maxlength="300" placeholder="למשל: תיקון דיווח / בונוס מיוחד"><div class="score-actions"><button class="btn ok" onclick="doScoreAdjust(1)">➕ הוסף נקודות</button><button class="btn danger" onclick="doScoreAdjust(-1)">➖ הפחת נקודות</button><button class="btn warning score-reset-btn" onclick="resetStudentScore()" ${known?'':'disabled'}>↺ אפס ניקוד</button></div><div class="score-history-host"></div></div>`;
 }
 function scoreEditorContext(btn,id,name,group){const details=btn.closest('.score-student-accordion');const box=details?.querySelector('.score-inline-editor');scoreSelectedStudent={id:Number(id),name:String(name||''),group:String(group||''),score:null};return {details,box};}
-async function doScoreAdjustFor(btn,id,name,group,sign){const {details}=scoreEditorContext(btn,id,name,group);const n=Math.abs(Math.trunc(Number(details?.querySelector('.score-delta-input')?.value)));if(!n)return alert('יש להזין מספר נקודות');const delta=n*sign,reason=details?.querySelector('.score-reason-input')?.value.trim()||'';if(!confirm(`${delta>0?'להוסיף':'להפחית'} ${n} נקודות ל${name}?`))return;const management_password=prompt('הזן סיסמת מנהל לאישור הפעולה:')||'';if(!management_password)return;try{const r=await api('/api/admin/score-management/'+id+'/adjust',{method:'POST',body:JSON.stringify({delta,reason,management_password})});scoreSelectedStudent={id:Number(id),name:String(name),group:String(group||''),score:Number(r.after)};updateOpenScoreEditorScore(details,Number(r.after));const inp=details?.querySelector('.score-delta-input');if(inp)inp.value='';const rs=details?.querySelector('.score-reason-input');if(rs)rs.value='';await loadScoreHistoryInto(details,id);await loadAdmin();await loadLeader();}catch(e){alert(e.message)}}
-async function resetStudentScoreFor(btn,id,name,group){const {details}=scoreEditorContext(btn,id,name,group);const current=Number(details?.querySelector('.score-current b')?.textContent);if(!Number.isFinite(current))return alert('הניקוד הנוכחי עדיין לא נטען');if(!confirm(`לאפס את הניקוד של ${name} (${current} נק׳) ל-0?`))return;const management_password=prompt('הזן סיסמת מנהל לאישור האיפוס:')||'';if(!management_password)return;const reason=details?.querySelector('.score-reason-input')?.value.trim()||'איפוס ניקוד';try{const r=await api('/api/admin/score-management/'+id+'/adjust',{method:'POST',body:JSON.stringify({mode:'reset',reason,management_password})});scoreSelectedStudent={id:Number(id),name:String(name),group:String(group||''),score:Number(r.after)};updateOpenScoreEditorScore(details,Number(r.after));await loadScoreHistoryInto(details,id);await loadAdmin();await loadLeader();}catch(e){alert(e.message)}}
+async function doScoreAdjustFor(btn,id,name,group,sign){
+  const {details}=scoreEditorContext(btn,id,name,group);
+  const n=Math.abs(Math.trunc(Number(details?.querySelector('.score-delta-input')?.value)));
+  if(!n)return alert('יש להזין מספר נקודות');
+  const delta=n*sign,reason=details?.querySelector('.score-reason-input')?.value.trim()||'';
+  if(!confirm(`${delta>0?'להוסיף':'להפחית'} ${n} נקודות ל${name}?`))return;
+  const management_password=prompt('הזן סיסמת מנהל לאישור הפעולה:')||'';if(!management_password)return;
+  btn.disabled=true;
+  const status=details?.querySelector('.score-live-status');if(status)status.textContent='מעדכן ניקוד…';
+  try{
+    const r=await api('/api/admin/score-management/'+id+'/adjust',{method:'POST',body:JSON.stringify({mode:'adjust',delta,reason,management_password})});
+    const after=Number(r.after);
+    scoreSelectedStudent={id:Number(id),name:String(name),group:String(group||''),score:after};
+    updateOpenScoreEditorScore(details,after);
+    const inp=details?.querySelector('.score-delta-input');if(inp)inp.value='';
+    const rs=details?.querySelector('.score-reason-input');if(rs)rs.value='';
+    // Refresh only dependent data in memory; never rebuild/close the open editor.
+    loadScoreHistoryInto(details,id);
+    Promise.all([loadAdminAll(),loadLeader()]).catch(()=>{});
+  }catch(e){if(status){status.textContent='העדכון נכשל';status.classList.add('score-load-error')}alert(e.message)}
+  finally{btn.disabled=false}
+}
+async function resetStudentScoreFor(btn,id,name,group){
+  const {details}=scoreEditorContext(btn,id,name,group);
+  const raw=details?.dataset.currentScore;
+  const current=raw===undefined?NaN:Number(raw);
+  if(!Number.isFinite(current))return alert('הניקוד הנוכחי עדיין לא נטען');
+  if(!confirm(`לאפס את הניקוד של ${name} (${current} נק׳) ל-0?`))return;
+  const management_password=prompt('הזן סיסמת מנהל לאישור האיפוס:')||'';if(!management_password)return;
+  const reason=details?.querySelector('.score-reason-input')?.value.trim()||'איפוס ניקוד';
+  btn.disabled=true;const status=details?.querySelector('.score-live-status');if(status)status.textContent='מאפס ניקוד…';
+  try{
+    const r=await api('/api/admin/score-management/'+id+'/adjust',{method:'POST',body:JSON.stringify({mode:'reset',reason,management_password})});
+    const after=Number(r.after);scoreSelectedStudent={id:Number(id),name:String(name),group:String(group||''),score:after};
+    updateOpenScoreEditorScore(details,after);loadScoreHistoryInto(details,id);Promise.all([loadAdminAll(),loadLeader()]).catch(()=>{});
+  }catch(e){if(status){status.textContent='האיפוס נכשל';status.classList.add('score-load-error')}alert(e.message)}finally{btn.disabled=false}
+}
 async function doScoreAdjust(sign){const n=Math.abs(Math.trunc(Number($('scoreDelta')?.value)));if(!n)return alert('יש להזין מספר נקודות');const delta=n*sign,reason=$('scoreReason')?.value.trim()||'';if(!confirm(`${delta>0?'להוסיף':'להפחית'} ${n} נקודות ל${scoreSelectedStudent.name}?`))return;const management_password=prompt('הזן סיסמת מנהל לאישור הפעולה:')||'';if(!management_password)return;try{const r=await api('/api/admin/score-management/'+scoreSelectedStudent.id+'/adjust',{method:'POST',body:JSON.stringify({mode:'adjust',delta,reason,management_password})});scoreSelectedStudent.score=r.after;await renderScoreStudentCard();await Promise.all([loadAdminAll(),loadLeader()]);alert(`הניקוד עודכן ל-${r.after}`)}catch(e){alert(e.message)}}
 async function resetStudentScore(){if(!scoreSelectedStudent||scoreSelectedStudent.score===null)return alert('הניקוד הנוכחי עדיין נטען. נסה שוב בעוד רגע.');if(!confirm(`לאפס את הניקוד של ${scoreSelectedStudent.name} מ-${scoreSelectedStudent.score} ל-0?\nהדיווחים וההיסטוריה יישמרו.`))return;const management_password=prompt('הזן סיסמת מנהל לאישור איפוס:')||'';if(!management_password)return;const reason=prompt('סיבת האיפוס (אופציונלי):')||'';try{const r=await api('/api/admin/score-management/'+scoreSelectedStudent.id+'/adjust',{method:'POST',body:JSON.stringify({mode:'reset',reason,management_password})});scoreSelectedStudent.score=r.after;await renderScoreStudentCard();await Promise.all([loadAdminAll(),loadLeader()]);alert('הניקוד אופס. ההיסטוריה נשמרה.')}catch(e){alert(e.message)}}
 async function undoLastScoreChange(){if(!scoreSelectedStudent||!confirm('לבטל את השינוי הידני האחרון?'))return;const management_password=prompt('הזן סיסמת מנהל:')||'';if(!management_password)return;try{await api('/api/admin/score-management/'+scoreSelectedStudent.id+'/undo-last',{method:'POST',body:JSON.stringify({management_password})});const rows=await api('/api/admin/score-management/students?q='+encodeURIComponent(scoreSelectedStudent.name));const fresh=rows.find(x=>Number(x.id)===Number(scoreSelectedStudent.id));if(fresh)scoreSelectedStudent.score=fresh.score;await renderScoreStudentCard();await Promise.all([loadAdminAll(),loadLeader()])}catch(e){alert(e.message)}}
