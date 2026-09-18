@@ -344,7 +344,7 @@ async function openMySettings(){
       <div class="settings-section"><h3>🔔 תזכורת יומית</h3><div class="small">חובה לבחור דרך אחת לקבלת התזכורת.</div>
       <div class="row settings-choice">
         <label class="choice-card"><input type="radio" name="myReminderChannel" value="email" ${channel==='email'?'checked':''}> 📧 אימייל</label>
-        <label class="choice-card recommended-push"><input type="radio" name="myReminderChannel" value="push" ${channel==='push'?'checked':''} onchange="preparePushPermission()"> 🔔 Push (מומלץ)</label>
+        <label class="choice-card recommended-push"><input type="radio" name="myReminderChannel" value="push" ${channel==='push'?'checked':''}> 🔔 Push (מומלץ)</label>
         <label class="choice-card" title="WhatsApp מושבת כרגע" style="opacity:.5;cursor:not-allowed"><input type="radio" name="myReminderChannel" value="whatsapp" disabled> 💬 WhatsApp (מושבת)</label>
         <input id="myReminderTime" class="input time-input" type="time" value="${u.reminder_time?String(u.reminder_time).slice(0,5):'20:00'}">
         <button class="btn ok" onclick="saveMyReminder()">שמור תזכורת</button>
@@ -358,28 +358,61 @@ async function openMySettings(){
       </div>`);
   }catch(e){alert(e.message)}
 }
+let pendingPushReminderSave=false;
+function nativeNotificationsEnabled(){
+  try{
+    if(window.NatzorNative&&typeof window.NatzorNative.notificationsEnabled==='function') return !!window.NatzorNative.notificationsEnabled();
+  }catch(_e){}
+  return null;
+}
 async function preparePushPermission(forSave=false){
   try{
+    const nativeEnabled=nativeNotificationsEnabled();
+    if(nativeEnabled===true)return true;
     if(window.NatzorNative&&typeof window.NatzorNative.openNotificationSettings==='function'){
+      if(forSave)pendingPushReminderSave=true;
       window.NatzorNative.openNotificationSettings();
-      if(forSave)alert('נפתחו הגדרות ההתראות של המכשיר. יש לאשר התראות ל„נצור לשונך”, לחזור לאפליקציה ואז ללחוץ שוב על „שמור תזכורת”.');
-      return !forSave;
+      return false;
     }
     if('Notification' in window){
+      if(Notification.permission==='granted')return true;
       const p=await Notification.requestPermission();
       if(p!=='granted'){alert('כדי לבחור Push יש לאשר התראות למערכת');return false}
       return true;
     }
-    alert('כדי להשתמש ב-Push יש לאשר התראות ל„נצור לשונך” בהגדרות המכשיר. בגרסת Android המעודכנת ההגדרות ייפתחו אוטומטית.');
+    alert('כדי להשתמש ב-Push יש לאשר התראות ל„נצור לשונך” בהגדרות המכשיר.');
     return false;
   }catch(e){alert('לא ניתן לפתוח את הגדרות ההתראות במכשיר זה');return false}
+}
+async function persistMyReminder(channel){
+  await api('/api/me/reminder',{method:'PUT',body:JSON.stringify({channel,time:$('myReminderTime').value})});
+  alert('הגדרות התזכורת נשמרו');
 }
 async function saveMyReminder(){
   const ch=document.querySelector('input[name="myReminderChannel"]:checked')?.value;
   if(!ch)return alert('חובה לבחור אימייל או Push');
   if(ch==='whatsapp')return alert('WhatsApp מושבת כרגע');
-  try{if(ch==='push'){const ok=await preparePushPermission(true);if(!ok)return;}await api('/api/me/reminder',{method:'PUT',body:JSON.stringify({channel:ch,time:$('myReminderTime').value})});alert('הגדרות התזכורת נשמרו')}catch(e){alert(e.message)}
+  try{
+    if(ch==='push'){
+      const ok=await preparePushPermission(true);
+      if(!ok)return;
+    }
+    pendingPushReminderSave=false;
+    await persistMyReminder(ch);
+  }catch(e){alert(e.message)}
 }
+window.onNativeNotificationPermissionChanged=async function(enabled){
+  if(!enabled)return;
+  if(!pendingPushReminderSave)return;
+  const modal=document.getElementById('mySettingsModal');
+  if(!modal){pendingPushReminderSave=false;return;}
+  const selected=document.querySelector('input[name="myReminderChannel"]:checked')?.value;
+  if(selected!=='push'){pendingPushReminderSave=false;return;}
+  try{
+    pendingPushReminderSave=false;
+    await persistMyReminder('push');
+  }catch(e){alert(e.message)}
+};
 async function changeMyPassword(){
   const current=$('myCurrentPassword').value,n=$('myNewPassword').value,n2=$('myNewPassword2').value;
   if(n.length<8)return alert('הסיסמה החדשה חייבת להכיל לפחות 8 תווים');
