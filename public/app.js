@@ -85,7 +85,7 @@ async function adminReport(studentId,type){playSound(type);const y=window.scroll
 function manageSectionBody(){return adminManageSection==='staff'?adminUsers(adminData.users,adminGroupsData):adminManageSection==='score'?adminScoreManagement():adminManageSection==='engagement'?adminEngagement():adminManageSection==='rules'?adminRulesEditor():`${adminStudents(adminData.students)}${adminGroups(adminGroupsData.filter(g=>g.type==='class'),adminData.students)}`}
 function manageCard(key,icon,title,desc){return `<button class="manage-card ${adminManageSection===key?'active':''}" onclick="setManageSection('${key}')"><span class="manage-icon">${icon}</span><span class="manage-card-copy"><b>${title}</b><small>${desc}</small></span><span class="manage-card-chevron" aria-hidden="true"></span></button>${adminManageSection===key?`<div id="manageBody" class="manage-inline-body">${manageSectionBody()}</div>`:''}`}
 function adminManageView(){return `<div class="panel manage-switch"><h2>ניהול</h2><div class="small">בחר את תחום הניהול</div><div class="manage-tabs">${manageCard('students','🎓','תלמידים','תלמידים, קבוצות ותקופות ניקוד')}${manageCard('score','🎯','ניהול ניקוד','הוספה, הפחתה, איפוס ותקופות')}${manageCard('staff','👥','צוות','משתמשים, הרשאות ותזכורות')}${manageCard('engagement','🚀','מעורבות','אתגרים, הודעות ו-Push')}${manageCard('rules','📜','כללי המבצע','עריכת המלל שמוצג לצוות')}</div></div>`}
-function setManageSection(s){playSound('nav');adminManageSection=s;renderAdminContent();if(s==='rules')loadCampaignRulesEditor();if(s==='engagement')loadEngagementData();if(s==='score')setTimeout(()=>searchScoreStudents(false),0)}
+function setManageSection(s){playSound('nav');adminManageSection=s;renderAdminContent();if(s==='rules')loadCampaignRulesEditor();if(s==='engagement')loadEngagementData();if(s==='score')setTimeout(()=>searchScoreStudents(false),0);requestAnimationFrame(()=>requestAnimationFrame(()=>{const card=document.querySelector('.manage-card.active');if(card)revealOpenedItem(card)}))}
 function campaignRulesHtml(text){return esc(text||'').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('')}
 function campaignRulesStyle(s={}){const fonts={system:'Arial,Helvetica,sans-serif',serif:'Georgia,"Times New Roman",serif',rounded:'"Arial Rounded MT Bold",Arial,sans-serif',traditional:'"Noto Serif Hebrew","Times New Roman",serif'};const sizes={small:'.92rem',medium:'1rem',large:'1.14rem'};return `background:${s.background||'#ffffff'};color:${s.textColor||'#17233b'};font-family:${fonts[s.font]||fonts.system};font-size:${sizes[s.size]||sizes.medium}`}
 function rulesPlainToHtml(text){return campaignRulesHtml(text)}
@@ -559,3 +559,44 @@ async function saveAnnouncementEdit(id){
 async function toggleAnnouncement(id,active){const a=engagementAnnouncements.find(x=>x.id===id);if(!a)return;try{await api('/api/admin/announcements/'+id,{method:'PUT',body:JSON.stringify({title:a.title,body:a.body,expires_at:a.expires_at,active})});await loadEngagementData()}catch(e){alert(e.message)}}
 async function deleteAnnouncement(id){if(!await appConfirm('למחוק את ההודעה?',{title:'מחיקת הודעה',icon:'🗑️',danger:true}))return;try{await api('/api/admin/announcements/'+id,{method:'DELETE'});await loadEngagementData()}catch(e){alert(e.message)}}
 async function sendAdminPush(){try{const audience=$('pushAudience').value,user_id=$('pushUser').value||null;const r=await api('/api/admin/push',{method:'POST',body:JSON.stringify({title:$('pushTitle').value,body:$('pushBody').value,audience,user_id})});alert(`ההתראה נשלחה: ${r.sent} מכשירים · Android ${r.fcm_sent||0} · Web ${r.web_sent||0}`);await loadEngagementData()}catch(e){alert(e.message)}}
+
+
+/* V2.5.12 — accordion viewport continuity
+   When the user opens another item, close only its peer in the same accordion
+   and keep the newly opened heading + beginning of content in view after reflow. */
+function revealOpenedItem(target){
+  if(!target)return;
+  const topGap=12;
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    const r=target.getBoundingClientRect();
+    const y=Math.max(0,window.scrollY+r.top-topGap);
+    window.scrollTo({top:y,behavior:'smooth'});
+  }));
+}
+function accordionFamily(d){
+  if(d.classList.contains('score-student-accordion'))return 'score-student-accordion';
+  if(d.classList.contains('score-group-collapse'))return 'score-group-collapse';
+  if(d.classList.contains('data-class-collapse'))return 'data-class-collapse';
+  if(d.classList.contains('staff-category'))return 'staff-category';
+  if(d.classList.contains('permission-sub'))return 'permission-sub';
+  if(d.classList.contains('group-collapse'))return 'group-collapse';
+  return null;
+}
+function accordionPeers(d){
+  const family=accordionFamily(d);if(!family)return [];
+  const parent=d.parentElement;if(!parent)return [];
+  return [...parent.children].filter(x=>x!==d&&x.tagName==='DETAILS'&&accordionFamily(x)===family);
+}
+document.addEventListener('click',e=>{
+  const summary=e.target.closest('summary');if(!summary)return;
+  const d=summary.parentElement;
+  if(d?.tagName==='DETAILS'&&accordionFamily(d))d.dataset.userAccordionToggle='1';
+},true);
+document.addEventListener('toggle',e=>{
+  const d=e.target;
+  if(!(d instanceof HTMLDetailsElement)||!d.open||!accordionFamily(d))return;
+  const userTriggered=d.dataset.userAccordionToggle==='1';
+  delete d.dataset.userAccordionToggle;
+  accordionPeers(d).forEach(x=>{x.open=false});
+  if(userTriggered)revealOpenedItem(d.querySelector(':scope > summary'));
+},true);
