@@ -482,3 +482,13 @@ header{padding-top:calc(24px + env(safe-area-inset-top,0px));padding-bottom:16px
 .app-dialog-icon{width:54px;height:54px;margin:0 auto 12px;display:grid;place-items:center;border-radius:17px;background:#eef3fa;font-size:27px}.app-dialog-card h3{margin:0 0 8px;font-size:22px}.app-dialog-message{color:#667085;line-height:1.55;margin-bottom:16px}.app-dialog-input-wrap{position:relative;margin:6px 0 18px}.app-dialog-input{padding-inline-end:48px;text-align:right}.app-dialog-eye{position:absolute;left:8px;top:50%;transform:translateY(-50%);width:36px;height:36px;border:0;background:transparent;border-radius:10px;cursor:pointer}.app-dialog-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.app-dialog-actions .btn{min-height:46px;font-weight:800}.input-error{border-color:#c93434!important;box-shadow:0 0 0 3px #c9343417}
 .manage-tabs{align-items:start}.manage-inline-body{grid-column:1/-1;min-width:0;animation:panelIn .28s ease}.manage-card-copy{display:flex;flex-direction:column;align-items:center;gap:4px}.manage-card-chevron{display:none;width:10px;height:10px;border-inline-end:2px solid #526077;border-bottom:2px solid #526077;transform:rotate(45deg);transition:.2s}.manage-card.active .manage-card-chevron{transform:rotate(225deg)}
 @media(max-width:650px){.manage-tabs{display:flex;flex-direction:column;gap:8px}.manage-card{width:100%;display:grid;grid-template-columns:42px 1fr 24px;align-items:center;text-align:right;padding:10px 13px}.manage-icon{grid-column:1}.manage-card-copy{grid-column:2;align-items:flex-start;gap:2px}.manage-card-chevron{display:block;grid-column:3}.manage-inline-body{width:100%;padding:2px 0 4px}.manage-inline-body>.panel{margin:0 0 4px}.app-dialog-card{padding:21px 17px;border-radius:21px}.app-dialog-actions{grid-template-columns:1fr 1fr}}
+
+/* V2.5.13 — compact nested accordions and sticky-header-aware navigation */
+.reporting-group-list,.staff-categories{display:block}
+.reporting-group-accordion{margin:8px 0}
+.reporting-group-accordion>.collapsible-body{padding-top:8px}
+.reporting-group-students>.panel{margin:0;box-shadow:none;border:0;background:transparent;padding:10px 0 2px}
+.staff-user-accordion{margin:8px 0;background:#fff}
+.staff-user-accordion>summary{min-height:54px}
+.staff-user-settings{padding-top:12px}
+.admin-collapsible>summary,.manage-card{scroll-margin-top:110px}
