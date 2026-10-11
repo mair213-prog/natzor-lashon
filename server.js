@@ -77,6 +77,8 @@ const DEFAULT_CAMPAIGN_RULES = "בישיבת נחלת יעקב בוחרים לד
 
 async function ensureV8Schema(){
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp_phone TEXT`);
+  await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`);
+  await pool.query(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','study','dorm','general'))`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_email_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_whatsapp_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_push_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -250,14 +252,14 @@ app.get('/api/leaderboard',auth,async(req,res)=>{
 
 app.get('/api/groups',auth,async(req,res)=>{
   const type=req.query.type;if(!['class','dorm'].includes(type))return res.status(400).json({error:'bad_type'});
-  if(req.user.role==='admin'){const {rows}=await pool.query('SELECT * FROM groups WHERE type=$1 AND active=true ORDER BY name',[type]);return res.json(rows)}
+  if(req.user.role==='admin'||req.user.role==='general'){const {rows}=await pool.query('SELECT * FROM groups WHERE type=$1 AND active=true ORDER BY name',[type]);return res.json(rows)}
   const allowed=(req.user.role==='study'&&type==='class')||(req.user.role==='dorm'&&type==='dorm');if(!allowed)return res.json([]);
   const {rows}=await pool.query(`SELECT g.* FROM groups g JOIN user_groups ug ON ug.group_id=g.id WHERE ug.user_id=$1 AND g.type=$2 AND g.active=true ORDER BY g.name`,[req.user.id,type]);res.json(rows);
 });
 
 app.get('/api/groups/:id/students',auth,async(req,res)=>{
   const gid=Number(req.params.id),{rows:grows}=await pool.query('SELECT * FROM groups WHERE id=$1 AND active=true',[gid]);const g=grows[0];if(!g)return res.status(404).json({error:'not_found'});
-  if(req.user.role!=='admin'){
+  if(req.user.role!=='admin'&&req.user.role!=='general'){
     const allowed=(req.user.role==='study'&&g.type==='class')||(req.user.role==='dorm'&&g.type==='dorm');if(!allowed)return res.status(403).json({error:'forbidden'});
     const {rowCount}=await pool.query('SELECT 1 FROM user_groups WHERE user_id=$1 AND group_id=$2',[req.user.id,gid]);if(!rowCount)return res.status(403).json({error:'forbidden'});
   }
@@ -283,6 +285,7 @@ app.get('/api/groups/:id/students',auth,async(req,res)=>{
 app.post('/api/reports',auth,async(req,res)=>{
   const studentId=Number(req.body.studentId),type=req.body.type,area=req.body.area;
   if(!studentId||!['plus','minus'].includes(type)||!['class','dorm'].includes(area))return res.status(400).json({error:'bad_request'});
+  if(req.user.role==='general'&&type!=='minus')return res.status(403).json({error:'צוות כללי רשאי לדווח מינוס בלבד'});
   if(req.user.role!=='admin'){
     if(req.user.role==='study'&&area!=='class')return res.status(403).json({error:'forbidden'});
     if(req.user.role==='dorm'&&area!=='dorm')return res.status(403).json({error:'forbidden'});
@@ -295,7 +298,7 @@ app.post('/api/reports',auth,async(req,res)=>{
     const pid=await activePeriodId(client);
     const membership=await client.query(`SELECT 1 FROM challenge_participants cp JOIN groups g ON g.id=cp.group_id WHERE cp.challenge_id=$3 AND cp.student_id=$1 AND g.type=$2 LIMIT 1`,[studentId,area,challengeId]);
     if(!membership.rowCount){await client.query('ROLLBACK');return res.status(400).json({error:'התלמיד אינו משויך לקבוצה באזור זה'})}
-    if(req.user.role!=='admin'){
+    if(req.user.role!=='admin'&&req.user.role!=='general'){
       const permitted=await client.query(`SELECT 1 FROM user_groups ug JOIN groups g ON g.id=ug.group_id JOIN group_students gs ON gs.group_id=g.id WHERE ug.user_id=$1 AND gs.student_id=$2 AND g.type=$3 LIMIT 1`,[req.user.id,studentId,area]);
       if(!permitted.rowCount){await client.query('ROLLBACK');return res.status(403).json({error:'אין לך הרשאה לדווח על תלמיד זה'})}
     }
@@ -567,6 +570,43 @@ function parseClassRoster(buffer){
   if(!students.length)throw new Error('לא נמצאו תלמידים. ודא שבכל גיליון מופיעות כותרות שם פרטי ושם משפחה.');
   return {students,warnings};
 }
+// Staff workbook import. Only admin can import; preview is informational and commit revalidates.
+function staffHeader(v){return cleanRosterName(v).replace(/[\s.:־-]/g,'').toLowerCase()}
+function parseStaffWorkbook(buffer){
+ const book=XLSX.read(buffer,{type:'buffer',cellDates:false});const entries=[],warnings=[],emailOwners=new Map();
+ const mapping={'צוות ניהול':'study','צוות מחנכים':'study','צוות פנימייה':'dorm','צוות כללי':'general'};
+ for(const sheetName of book.SheetNames){const role=mapping[cleanRosterName(sheetName)];if(!role){warnings.push('גיליון לא מוכר, דולג: '+sheetName);continue}
+ const rows=XLSX.utils.sheet_to_json(book.Sheets[sheetName],{header:1,defval:'',blankrows:false});let head=null;
+ for(let i=0;i<Math.min(rows.length,30);i++){const h=rows[i].map(staffHeader);const name=h.findIndex(x=>['שם','שםמלא','שםהעובד'].includes(x));const email=h.findIndex(x=>['דואראלקטרוני','אימייל','מייל','email','כתובתמייל'].includes(x));const phone=h.findIndex(x=>['טלפון','נייד','מספרטלפון','פלאפון'].includes(x));if(name>=0&&email>=0){head={name,email,phone,row:i};break}}
+ if(!head){warnings.push('לא נמצאו כותרות שם ודואר אלקטרוני בגיליון '+sheetName);continue}
+ for(let i=head.row+1;i<rows.length;i++){const row=rows[i];const name=cleanRosterName(row[head.name]);const email=cleanRosterName(row[head.email]).toLowerCase();const phone=head.phone<0?'':cleanRosterName(row[head.phone]);if(!name)continue;
+ if(!email){entries.push({name,email:'',phone,role,sheetName,status:'missing_email'});continue}
+ if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){entries.push({name,email,phone,role,sheetName,status:'invalid_email'});continue}
+ const entry={name,email,phone,role,sheetName,status:'ready'};entries.push(entry);if(!emailOwners.has(email))emailOwners.set(email,[]);emailOwners.get(email).push(entry);
+ }
+ }
+ for(const [email,owners] of emailOwners){if(owners.length>1){for(const x of owners)x.status='duplicate_in_file';warnings.push('כתובת מייל כפולה בקובץ: '+email+' — הרשומות ידולגו')}}
+ return {entries,warnings};
+}
+app.post('/api/admin/staff/import/preview',auth,admin,rosterUpload.single('file'),async(req,res)=>{
+ try{if(!req.file||!/\.xlsx$/i.test(req.file.originalname))return res.status(400).json({error:'יש לבחור קובץ Excel מסוג xlsx'});
+ const data=parseStaffWorkbook(req.file.buffer);const {rows}=await pool.query('SELECT lower(email) email FROM users');const existing=new Set(rows.map(x=>x.email));
+ for(const e of data.entries)if(e.status==='ready'&&existing.has(e.email))e.status='existing';
+ const counts={total:data.entries.length,new:data.entries.filter(x=>x.status==='ready').length,existing:data.entries.filter(x=>x.status==='existing').length,missing_email:data.entries.filter(x=>x.status==='missing_email').length,invalid_email:data.entries.filter(x=>x.status==='invalid_email').length,duplicate:data.entries.filter(x=>x.status==='duplicate_in_file').length};
+ res.json({...data,counts});}catch(e){res.status(400).json({error:'שגיאה בקריאת קובץ הצוות'})}
+});
+app.post('/api/admin/staff/import/commit',auth,admin,rosterUpload.single('file'),async(req,res)=>{
+ try{if(!req.file||!/\.xlsx$/i.test(req.file.originalname))return res.status(400).json({error:'יש לבחור קובץ Excel מסוג xlsx'});
+ const {entries}=parseStaffWorkbook(req.file.buffer);let added=0,existing=0,skipped=0;
+ for(const e of entries){if(e.status!=='ready'||e.role==='admin'){skipped++;continue}
+ // Never promote anyone to administrator based on workbook data. Existing accounts are untouched.
+ const password=await bcrypt.hash((await import('node:crypto')).randomBytes(32).toString('hex'),12);
+ const result=await pool.query('INSERT INTO users(name,email,whatsapp_phone,password_hash,role) VALUES($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING RETURNING id',[e.name,e.email,e.phone||null,password,e.role]);
+ if(result.rowCount)added++;else existing++;
+ }
+ res.json({added,existing,skipped,message:'חשבונות חדשים נוצרו עם סיסמה אקראית חסומה לשימוש. מנהל חייב להגדיר להם סיסמה באמצעות מסך ניהול הצוות לפני כניסה.'});
+ }catch(e){console.error('Staff import failed',e);res.status(500).json({error:'ייבוא הצוות נכשל; בדוק את יומן השרת'})}
+});
 app.post('/api/admin/students/import/preview',auth,admin,rosterUpload.single('file'),async(req,res)=>{
   try{
     if(!req.file||!(/\.xlsx$/i.test(req.file.originalname)))return res.status(400).json({error:'יש לבחור קובץ Excel מסוג xlsx'});
@@ -636,7 +676,7 @@ app.delete('/api/admin/groups/:gid/students/:sid',auth,admin,async(req,res)=>{
 
 app.post('/api/admin/users',auth,admin,async(req,res)=>{
   const name=String(req.body.name||'').trim(),email=String(req.body.email||'').trim().toLowerCase(),phone=String(req.body.whatsapp_phone||'').trim(),password=String(req.body.password||''),role=req.body.role;
-  if(!name||!email||password.length<8||!['admin','study','dorm'].includes(role))return res.status(400).json({error:'יש למלא שם, אימייל, תפקיד וסיסמה של 8 תווים לפחות'});
+  if(!name||!email||password.length<8||!['admin','study','dorm','general'].includes(role))return res.status(400).json({error:'יש למלא שם, אימייל, תפקיד וסיסמה של 8 תווים לפחות'});
   if(role==='admin'){
     if(!MANAGEMENT_PASSWORD)return res.status(500).json({error:'סיסמת ניהול ראשית עדיין לא הוגדרה בשרת'});
     if(!validManagementPassword(req.body.management_password))return res.status(403).json({error:'סיסמת הניהול הראשית שגויה'});
@@ -647,7 +687,7 @@ app.post('/api/admin/users',auth,admin,async(req,res)=>{
 });
 app.put('/api/admin/users/:id',auth,admin,async(req,res)=>{
   const id=Number(req.params.id),name=String(req.body.name||'').trim(),role=req.body.role,active=!!req.body.active;
-  if(!['admin','study','dorm'].includes(role))return res.status(400).json({error:'תפקיד לא תקין'});
+  if(!['admin','study','dorm','general'].includes(role))return res.status(400).json({error:'תפקיד לא תקין'});
   const {rows:existing}=await pool.query('SELECT role FROM users WHERE id=$1',[id]);
   if(!existing[0])return res.status(404).json({error:'משתמש לא נמצא'});
   if(role==='admin'&&existing[0].role!=='admin'){
@@ -800,7 +840,7 @@ function bonusConfig(b){const enabled=!!b.bonus_enabled;const click=Number(b.bon
 app.post('/api/admin/challenges',auth,admin,async(req,res)=>{try{const title=String(req.body.title||'').trim(),target=Math.max(1,Number(req.body.target_points)||100),b=bonusConfig(req.body);if(!title)return res.status(400).json({error:'יש להזין שם אתגר'});const client=await pool.connect();let created;try{await client.query('BEGIN');const {rows}=await client.query(`INSERT INTO challenges(title,description,target_points,end_at,bonus_enabled,bonus_per_click,bonus_daily_limit,bonus_total_limit) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,[title,String(req.body.description||''),target,req.body.end_at||null,b.enabled,b.click,b.daily,b.total]);created=rows[0];if(b.enabled)await snapshotChallengeRoster(client,created.id);await client.query('COMMIT')}catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}res.json(created)}catch(e){res.status(400).json({error:e.message})}});
 app.put('/api/admin/challenges/:id',auth,admin,async(req,res)=>{try{const id=Number(req.params.id),title=String(req.body.title||'').trim(),target=Math.max(1,Number(req.body.target_points)||100);if(!title)return res.status(400).json({error:'יש להזין שם אתגר'});const active=typeof req.body.active==='boolean'?req.body.active:null;const previous=await pool.query('SELECT * FROM challenges WHERE id=$1',[id]);if(!previous.rowCount)return res.status(404).json({error:'אתגר לא נמצא'});const old=previous.rows[0];const b=bonusConfig({...old,...req.body});if(old.bonus_enabled&&b.total!==Number(old.bonus_total_limit))throw new Error('לא ניתן לשנות תקרת בונוס לאחר פתיחת האתגר כדי לשמור על יעד כיתתי קבוע');const {rows}=await pool.query(`UPDATE challenges SET title=$1,description=$2,target_points=$3,end_at=$4,active=COALESCE($5,active),bonus_enabled=$7,bonus_per_click=$8,bonus_daily_limit=$9,bonus_total_limit=$10 WHERE id=$6 RETURNING *`,[title,String(req.body.description||''),target,req.body.end_at||null,active,id,b.enabled,b.click,b.daily,b.total]);res.json(rows[0])}catch(e){res.status(400).json({error:e.message})}});
 app.get('/api/challenges/bonus-active',auth,async(req,res)=>{const {rows}=await pool.query(`SELECT id,title,description,bonus_per_click,bonus_daily_limit,bonus_total_limit,end_at FROM challenges WHERE active=true AND bonus_enabled=true AND start_at<=NOW() AND end_at>NOW() ORDER BY id DESC`);res.json(rows)});
-app.post('/api/challenges/:id/bonus',auth,async(req,res)=>{const challengeId=Number(req.params.id),studentId=Number(req.body.studentId),area=req.body.area;if(!Number.isSafeInteger(challengeId)||!Number.isSafeInteger(studentId)||!['class','dorm'].includes(area))return res.status(400).json({error:'בקשה לא תקינה'});if(req.user.role!=='admin'&&((req.user.role==='study'&&area!=='class')||(req.user.role==='dorm'&&area!=='dorm')))return res.status(403).json({error:'אין הרשאה'});const client=await pool.connect();try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock($1,$2)',[challengeId,studentId]);const {rows:[c]}=await client.query('SELECT * FROM challenges WHERE id=$1 AND active=true AND bonus_enabled=true AND start_at<=NOW() AND end_at>NOW()',[challengeId]);if(!c){await client.query('ROLLBACK');return res.status(409).json({error:'האתגר אינו פעיל'})}const membership=await client.query(`SELECT 1 FROM challenge_participants cp JOIN groups g ON g.id=cp.group_id WHERE cp.challenge_id=$3 AND cp.student_id=$1 AND g.type=$2 LIMIT 1`,[studentId,area,challengeId]);if(!membership.rowCount){await client.query('ROLLBACK');return res.status(403).json({error:'התלמיד אינו משויך לקבוצה'})}if(req.user.role!=='admin'){const permission=await client.query(`SELECT 1 FROM user_groups ug JOIN group_students gs ON gs.group_id=ug.group_id JOIN groups g ON g.id=gs.group_id WHERE ug.user_id=$1 AND gs.student_id=$2 AND g.type=$3 LIMIT 1`,[req.user.id,studentId,area]);if(!permission.rowCount){await client.query('ROLLBACK');return res.status(403).json({error:'אין הרשאה לתלמיד'})}}const {rows:[totals]}=await client.query(`SELECT COALESCE(SUM(points),0)::int total,COALESCE(SUM(points) FILTER(WHERE (created_at AT TIME ZONE 'Asia/Jerusalem')::date=(NOW() AT TIME ZONE 'Asia/Jerusalem')::date),0)::int today FROM challenge_bonus_awards WHERE challenge_id=$1 AND student_id=$2`,[challengeId,studentId]);const amount=Number(c.bonus_per_click);if(totals.total+amount>c.bonus_total_limit||(c.bonus_daily_limit>0&&totals.today+amount>c.bonus_daily_limit)){await client.query('ROLLBACK');return res.status(409).json({error:'התלמיד הגיע למגבלת הבונוס היומית או הכוללת'})}const pid=await activePeriodId(client);await client.query(`INSERT INTO challenge_bonus_awards(challenge_id,student_id,reporter_id,period_id,points) VALUES($1,$2,$3,$4,$5)`,[challengeId,studentId,req.user.id,pid,amount]);await client.query(`INSERT INTO score_adjustments(student_id,period_id,delta,reason,action_type,admin_user_id) VALUES($1,$2,$3,$4,'challenge_bonus',NULL)`,[studentId,pid,amount,'בונוס אתגר: '+c.title]);await client.query('COMMIT');res.json({ok:true,points:amount,total:totals.total+amount})}catch(e){await client.query('ROLLBACK').catch(()=>{});console.error('Challenge bonus:',e);res.status(500).json({error:'שמירת הבונוס נכשלה'})}finally{client.release()}});
+app.post('/api/challenges/:id/bonus',auth,async(req,res)=>{const challengeId=Number(req.params.id),studentId=Number(req.body.studentId),area=req.body.area;if(!Number.isSafeInteger(challengeId)||!Number.isSafeInteger(studentId)||!['class','dorm'].includes(area))return res.status(400).json({error:'בקשה לא תקינה'});if(req.user.role==='general')return res.status(403).json({error:'צוות כללי אינו מורשה לתת בונוסים'});if(req.user.role!=='admin'&&((req.user.role==='study'&&area!=='class')||(req.user.role==='dorm'&&area!=='dorm')))return res.status(403).json({error:'אין הרשאה'});const client=await pool.connect();try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock($1,$2)',[challengeId,studentId]);const {rows:[c]}=await client.query('SELECT * FROM challenges WHERE id=$1 AND active=true AND bonus_enabled=true AND start_at<=NOW() AND end_at>NOW()',[challengeId]);if(!c){await client.query('ROLLBACK');return res.status(409).json({error:'האתגר אינו פעיל'})}const membership=await client.query(`SELECT 1 FROM challenge_participants cp JOIN groups g ON g.id=cp.group_id WHERE cp.challenge_id=$3 AND cp.student_id=$1 AND g.type=$2 LIMIT 1`,[studentId,area,challengeId]);if(!membership.rowCount){await client.query('ROLLBACK');return res.status(403).json({error:'התלמיד אינו משויך לקבוצה'})}if(req.user.role!=='admin'){const permission=await client.query(`SELECT 1 FROM user_groups ug JOIN group_students gs ON gs.group_id=ug.group_id JOIN groups g ON g.id=gs.group_id WHERE ug.user_id=$1 AND gs.student_id=$2 AND g.type=$3 LIMIT 1`,[req.user.id,studentId,area]);if(!permission.rowCount){await client.query('ROLLBACK');return res.status(403).json({error:'אין הרשאה לתלמיד'})}}const {rows:[totals]}=await client.query(`SELECT COALESCE(SUM(points),0)::int total,COALESCE(SUM(points) FILTER(WHERE (created_at AT TIME ZONE 'Asia/Jerusalem')::date=(NOW() AT TIME ZONE 'Asia/Jerusalem')::date),0)::int today FROM challenge_bonus_awards WHERE challenge_id=$1 AND student_id=$2`,[challengeId,studentId]);const amount=Number(c.bonus_per_click);if(totals.total+amount>c.bonus_total_limit||(c.bonus_daily_limit>0&&totals.today+amount>c.bonus_daily_limit)){await client.query('ROLLBACK');return res.status(409).json({error:'התלמיד הגיע למגבלת הבונוס היומית או הכוללת'})}const pid=await activePeriodId(client);await client.query(`INSERT INTO challenge_bonus_awards(challenge_id,student_id,reporter_id,period_id,points) VALUES($1,$2,$3,$4,$5)`,[challengeId,studentId,req.user.id,pid,amount]);await client.query(`INSERT INTO score_adjustments(student_id,period_id,delta,reason,action_type,admin_user_id) VALUES($1,$2,$3,$4,'challenge_bonus',NULL)`,[studentId,pid,amount,'בונוס אתגר: '+c.title]);await client.query('COMMIT');res.json({ok:true,points:amount,total:totals.total+amount})}catch(e){await client.query('ROLLBACK').catch(()=>{});console.error('Challenge bonus:',e);res.status(500).json({error:'שמירת הבונוס נכשלה'})}finally{client.release()}});
 app.delete('/api/admin/challenges/:id',auth,admin,async(req,res)=>{await pool.query('DELETE FROM challenges WHERE id=$1',[Number(req.params.id)]);res.json({ok:true})});
 
 let firebaseAdminPromise=null;
