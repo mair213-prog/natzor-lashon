@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>נצור לשונך – לוח המובילים</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body class="results-page lobby-results">
+<main class="lobby-shell">
+  <section class="lobby-top">
+    <div class="lobby-brand">
+      <div class="results-logo">נצור לשונך</div>
+      <div class="results-slogan">בוחרים לדבר נקי</div>
+    </div>
+    <div id="publicLeader" class="public-leader lobby-leader">טוען תוצאות…</div>
+    <div class="lobby-clock">
+      <div id="clockTime" class="clock-time"></div>
+      <div id="clockDate" class="clock-date"></div>
+    </div>
+  </section>
+
+  <section class="group-progress-panel">
+    <div class="group-progress-title">📊 מצב הקבוצות</div>
+    <div id="groupProgress" class="group-progress-grid"></div>
+  </section>
+  <section class="lobby-board">
+    <div class="lobby-board-title">
+      <h1>🏆 20 התלמידים המובילים</h1><div class="small" style="text-align:center;margin-top:-8px;margin-bottom:12px">מדד מובילות: 70% שפה נקייה + 30% השתתפות</div>
+      <span class="live-pill">● מתעדכן אונליין</span>
+    </div>
+    <div id="publicStudents" class="lobby-students"></div>
+  </section>
+</main>
+
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function rank(n){
+  n=Number(n);
+  if(n>=150)return'🏆 אלוף נצור לשונך';
+  if(n>=120)return'⭐ מוביל שפה נקייה';
+  if(n>=90)return'🛡️ מגן הדיבור';
+  if(n>=60)return'💬 נאמן הלשון';
+  if(n>=30)return'🌱 שומר המילה';
+  if(n<=-100)return'🛑 דורש שינוי';
+  if(n<=-80)return'🚦 עצירה וחשיבה';
+  if(n<=-60)return'🧭 חוזר למסלול';
+  if(n<=-40)return'🔄 מתחזק בדיבור';
+  if(n<=-20)return'⚠️ בדרך לתיקון';
+  return'';
+}
+function place(i){return i===0?'🥇':i===1?'🥈':i===2?'🥉':String(i+1)}
+async function refresh(){
+  try{
+    const r=await fetch('/api/public/results',{cache:'no-store'});
+    const d=await r.json();
+    if(!r.ok)throw new Error();
+    const g=d.leader;
+    document.getElementById('publicLeader').innerHTML=g
+      ? `<div class="leader-kicker">🏆 הקבוצה המובילה</div><div class="name">${esc(g.name)}</div><div class="points">${g.score} נקודות</div>`
+      : 'עדיין אין נתונים';
+    document.getElementById('groupProgress').innerHTML=(d.groups||[]).map((x,i)=>`<div class="group-progress-card ${i===0?'first':''}">
+      <div class="group-progress-head"><span>${i===0?'🏆 ':''}${esc(x.name)}</span><b>${x.score} נק׳</b></div>
+      <div class="group-progress-track"><span style="width:${Math.max(0,Math.min(100,x.percent||0))}%"></span></div>
+      <div class="group-progress-percent">${x.percent||0}% הכיתה צברה</div>
+    </div>`).join('');
+    const ranked=(d.students||[]).filter(s=>s.eligible_leader).sort((a,b)=>(Number(b.leadership_score)||0)-(Number(a.leadership_score)||0)||(Number(b.score)||0)-(Number(a.score)||0)||String(a.name||'').localeCompare(String(b.name||''),'he'));
+    document.getElementById('publicStudents').innerHTML=ranked.length?ranked.map((s,i)=>{
+      const rnk=rank(s.score);
+      return `<div class="public-row lobby-row ${i<3?'top':''}">
+        <div class="public-place">${place(i)}</div>
+        <div class="public-student-info">
+          <div class="public-name">${esc(s.name)}</div>
+          <div class="public-class">${esc(s.class_name||'')}${rnk?` · <span class="public-rank">${rnk}</span>`:''}</div>
+        </div>
+        <div class="public-score">${s.leadership_score}%<small style="display:block;font-size:12px;font-weight:400">${s.score} נק׳</small></div>
+      </div>`;
+    }).join(''):'<div class="results-error">עדיין אין תלמידים שעומדים בסף ההשתתפות לדירוג</div>';
+  }catch(e){
+    document.getElementById('publicStudents').innerHTML='<div class="results-error">לא ניתן לטעון את התוצאות כרגע</div>';
+  }
+}
+function tickClock(){
+  const d=new Date();
+  document.getElementById('clockTime').textContent=d.toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
+  document.getElementById('clockDate').textContent=d.toLocaleDateString('he-IL',{weekday:'long',day:'numeric',month:'long'});
+}
+refresh();
+tickClock();
+setInterval(refresh,10000);
+setInterval(tickClock,1000);
+</script>
+</body>
+</html>
