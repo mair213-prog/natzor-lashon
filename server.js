@@ -729,6 +729,28 @@ app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{
 
 app.put('/api/admin/users/:id/password',auth,admin,async(req,res)=>{const id=Number(req.params.id),password=String(req.body.password||'');if(password.length<8)return res.status(400).json({error:'הסיסמה חייבת להכיל לפחות 8 תווים'});const hash=await bcrypt.hash(password,12);await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2',[hash,id]);res.json({ok:true})});
 app.delete('/api/admin/users/:id',auth,admin,async(req,res)=>{const id=Number(req.params.id);if(id===req.user.id)return res.status(400).json({error:'לא ניתן למחוק את המשתמש שבו אתה מחובר'});await pool.query('DELETE FROM users WHERE id=$1',[id]);res.json({ok:true})});
+// Role-based permission templates, applied to existing staff and automatically to future staff.
+app.get('/api/admin/users/groups/role-defaults',auth,admin,async(req,res)=>{
+  const {rows}=await pool.query('SELECT role,group_id FROM role_group_defaults ORDER BY role,group_id');res.json(rows);
+});
+app.post('/api/admin/users/groups/by-role',auth,admin,async(req,res)=>{
+  const {role,groupIds,mode,saveDefault}=req.body||{};
+  if(!['study','dorm','general','admin'].includes(role)||!['grant','revoke'].includes(mode)||!Array.isArray(groupIds)||!groupIds.length||groupIds.length>100||groupIds.some(x=>!Number.isSafeInteger(x)||x<=0))return res.status(400).json({error:'בחירת תפקיד או קבוצות אינה תקינה'});
+  const gids=[...new Set(groupIds)],client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const groups=await client.query("SELECT id FROM groups WHERE id=ANY($1::int[]) AND active=true AND type IN ('class','dorm')",[gids]);
+    if(groups.rowCount!==gids.length){await client.query('ROLLBACK');return res.status(400).json({error:'נמצאה קבוצה שאינה פעילה'})}
+    if(mode==='grant')await client.query('INSERT INTO user_groups(user_id,group_id) SELECT u.id,g.id FROM users u CROSS JOIN groups g WHERE u.role=$1 AND u.active=true AND g.id=ANY($2::int[]) ON CONFLICT DO NOTHING',[role,gids]);
+    else await client.query('DELETE FROM user_groups ug USING users u WHERE ug.user_id=u.id AND u.role=$1 AND ug.group_id=ANY($2::int[])',[role,gids]);
+    if(saveDefault){
+      if(mode==='grant')await client.query('INSERT INTO role_group_defaults(role,group_id) SELECT $1,g.id FROM groups g WHERE g.id=ANY($2::int[]) ON CONFLICT DO NOTHING',[role,gids]);
+      else await client.query('DELETE FROM role_group_defaults WHERE role=$1 AND group_id=ANY($2::int[])',[role,gids]);
+    }
+    const count=await client.query('SELECT COUNT(*)::int count FROM users WHERE role=$1 AND active=true',[role]);
+    await client.query('COMMIT');res.json({ok:true,users:count.rows[0].count,groups:gids.length,defaultSaved:!!saveDefault});
+  }catch(e){await client.query('ROLLBACK').catch(()=>{});console.error('Role permission update:',e);res.status(500).json({error:'עדכון הרשאות לפי תפקיד נכשל'})}finally{client.release()}
+});
 app.post('/api/admin/users/groups/bulk',auth,admin,async(req,res)=>{
   const userIds=req.body?.userIds,groupIds=req.body?.groupIds,mode=req.body?.mode;
   if(!Array.isArray(userIds)||!Array.isArray(groupIds)||!userIds.length||!groupIds.length||userIds.length>300||groupIds.length>100||!['grant','revoke'].includes(mode)||[...userIds,...groupIds].some(x=>!Number.isSafeInteger(x)||x<=0))return res.status(400).json({error:'בחירת משתמשים או קבוצות אינה תקינה'});
@@ -825,6 +847,16 @@ async function ensureV2Schema(){
   await pool.query(`CREATE TABLE IF NOT EXISTS push_message_reads (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,message_id BIGINT NOT NULL REFERENCES push_messages(id) ON DELETE CASCADE,dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(user_id,message_id))`);
   await pool.query(`CREATE TABLE IF NOT EXISTS score_adjustments (id BIGSERIAL PRIMARY KEY,student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,period_id INTEGER NOT NULL REFERENCES score_periods(id) ON DELETE CASCADE,delta INTEGER NOT NULL,reason TEXT NOT NULL DEFAULT '',action_type TEXT NOT NULL DEFAULT 'adjustment',admin_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_score_adjustments_student_period ON score_adjustments(student_id,period_id)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS role_group_defaults (role TEXT NOT NULL CHECK(role IN ('study','dorm','general','admin')),group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,PRIMARY KEY(role,group_id))`);
+  await pool.query(`CREATE OR REPLACE FUNCTION apply_staff_role_defaults() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN
+    IF TG_OP='INSERT' OR (TG_OP='UPDATE' AND NEW.role IS DISTINCT FROM OLD.role) THEN
+      INSERT INTO user_groups(user_id,group_id) SELECT NEW.id,d.group_id FROM role_group_defaults d JOIN groups g ON g.id=d.group_id AND g.active=true WHERE d.role=NEW.role ON CONFLICT DO NOTHING;
+    END IF;
+    RETURN NEW;
+  END $$`);
+  await pool.query(`DROP TRIGGER IF EXISTS trg_staff_role_defaults ON users`);
+  await pool.query(`CREATE TRIGGER trg_staff_role_defaults AFTER INSERT OR UPDATE OF role ON users FOR EACH ROW EXECUTE FUNCTION apply_staff_role_defaults()`);
+
 }
 function scoreSql(a='s'){return `(COUNT(r.id) FILTER(WHERE r.report_type='plus')*3-COUNT(r.id) FILTER(WHERE r.report_type='minus')+FLOOR((COUNT(r.id) FILTER(WHERE r.report_type='plus'))/20.0)*5)::int`}
 app.get('/api/home',auth,async(req,res)=>{
