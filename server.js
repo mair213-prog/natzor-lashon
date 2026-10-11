@@ -167,14 +167,14 @@ async function syncStudyDormGroups(client=pool){
     INSERT INTO groups(name,type,active,goal_target)
     SELECT g.name,'dorm',g.active,g.goal_target
     FROM groups g
-    WHERE g.type='class'
+    WHERE g.type='class' AND g.active=true
       AND NOT EXISTS (SELECT 1 FROM groups x WHERE x.type='dorm' AND x.name=g.name)
   `);
   await client.query(`
     INSERT INTO groups(name,type,active,goal_target)
     SELECT g.name,'class',g.active,g.goal_target
     FROM groups g
-    WHERE g.type='dorm'
+    WHERE g.type='dorm' AND g.active=true
       AND NOT EXISTS (SELECT 1 FROM groups x WHERE x.type='class' AND x.name=g.name)
   `);
   await client.query(`
@@ -183,6 +183,7 @@ async function syncStudyDormGroups(client=pool){
     FROM groups source
     JOIN groups target ON target.name=source.name AND target.type<>source.type
     JOIN group_students gs ON gs.group_id=source.id
+    WHERE source.active=true AND target.active=true
     ON CONFLICT DO NOTHING
   `);
 }
@@ -526,11 +527,27 @@ app.put('/api/admin/groups/:id/goal',auth,admin,async(req,res)=>{
 
 app.delete('/api/admin/groups/:id',auth,admin,async(req,res)=>{
   const id=Number(req.params.id);
-  const {rows}=await pool.query('SELECT name FROM groups WHERE id=$1',[id]);
-  if(rows[0])await pool.query('DELETE FROM groups WHERE name=$1 AND type IN (\'class\',\'dorm\')',[rows[0].name]);
-  res.json({ok:true});
+  if(!Number.isInteger(id)||id<=0)return res.status(400).json({error:'קבוצה לא תקינה'});
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const {rows}=await client.query('SELECT name FROM groups WHERE id=$1 AND active=true FOR UPDATE',[id]);
+    if(!rows[0]){await client.query('ROLLBACK');return res.status(404).json({error:'הקבוצה אינה קיימת'});}
+    // Archive both linked class/dorm groups, rather than deleting their IDs.
+    // Historical challenges and reports can still refer to these group IDs.
+    const {rows:affected}=await client.query(`SELECT id FROM groups WHERE name=$1 AND type IN ('class','dorm') AND active=true FOR UPDATE`,[rows[0].name]);
+    const ids=affected.map(g=>g.id);
+    if(ids.length){
+      await client.query('DELETE FROM group_students WHERE group_id=ANY($1::int[])',[ids]);
+      await client.query('DELETE FROM user_groups WHERE group_id=ANY($1::int[])',[ids]);
+      await client.query('DELETE FROM role_group_defaults WHERE group_id=ANY($1::int[])',[ids]);
+      await client.query('UPDATE groups SET active=false WHERE id=ANY($1::int[])',[ids]);
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,unassigned:true});
+  }catch(e){await client.query('ROLLBACK');console.error('Group archive failed',e);res.status(500).json({error:'מחיקת הקבוצה נכשלה. לא בוצע שינוי חלקי.'});}
+  finally{client.release()}
 });
-
 
 // Excel class-roster import: headers are located by label, never by a fixed column index.
 const rosterUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024}});
