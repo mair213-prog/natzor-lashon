@@ -4,6 +4,8 @@ import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
+import multer from 'multer';
+import * as XLSX from 'xlsx';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendDueReminders } from './reminders.js';
@@ -524,6 +526,84 @@ app.delete('/api/admin/groups/:id',auth,admin,async(req,res)=>{
   const {rows}=await pool.query('SELECT name FROM groups WHERE id=$1',[id]);
   if(rows[0])await pool.query('DELETE FROM groups WHERE name=$1 AND type IN (\'class\',\'dorm\')',[rows[0].name]);
   res.json({ok:true});
+});
+
+
+// Excel class-roster import: headers are located by label, never by a fixed column index.
+const rosterUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024}});
+function cleanRosterName(v){return String(v??'').replace(/[\u200e\u200f\u202a-\u202e]/g,'').replace(/\s+/g,' ').trim()}
+function rosterHeader(v){return cleanRosterName(v).replace(/[\s.:־-]/g,'')}
+function parseClassRoster(buffer){
+  const book=XLSX.read(buffer,{type:'buffer',cellDates:false});
+  const students=[],warnings=[],seen=new Set();
+  for(const sheetName of book.SheetNames){
+    if(/כלל\s*התלמידים|סיכום|הוראות|רשימה\s*כללית/i.test(sheetName))continue;
+    const rows=XLSX.utils.sheet_to_json(book.Sheets[sheetName],{header:1,defval:'',blankrows:false});
+    const className=cleanRosterName(sheetName).replace(/^כיתה\s*/,'').replace(/\s+/g,'').replace(/^(י)[\s-]*([12])$/,'$1$2');
+    if(!className){warnings.push(`גיליון ללא שם כיתה: ${sheetName}`);continue}
+    let header=null;
+    for(let i=0;i<Math.min(rows.length,35);i++){
+      const h=rows[i].map(rosterHeader);
+      const family=h.findIndex(x=>['שםמשפחה','משפחה','שםמשפחתו'].includes(x));
+      const first=h.findIndex(x=>['שםפרטי','פרטי'].includes(x));
+      if(family>=0&&first>=0){header={family,first,row:i};break}
+    }
+    if(!header){warnings.push(`לא נמצאו כותרות "שם פרטי" ו"שם משפחה" בגיליון ${sheetName}; הגיליון לא יובא`);continue}
+    let count=0;
+    for(let i=0;i<rows.length;i++){
+      if(i===header.row)continue;
+      const row=rows[i],first=cleanRosterName(row[header.first]),family=cleanRosterName(row[header.family]);
+      if(!first||!family||rosterHeader(first)==='שםפרטי'||rosterHeader(family)==='שםמשפחה')continue;
+      // Rows representing students are numbered; this also allows students above the header.
+      if(!/^\d+$/.test(cleanRosterName(row[0])))continue;
+      if(first.length>90||family.length>90)continue;
+      const name=`${first} ${family}`;
+      const key=className+'|'+name.replace(/\s+/g,' ').toLowerCase();
+      if(seen.has(key))continue;seen.add(key);
+      students.push({name,className});count++;
+    }
+    if(!count)warnings.push(`לא נמצאו תלמידים בגיליון ${sheetName}`);
+  }
+  if(!students.length)throw new Error('לא נמצאו תלמידים. ודא שבכל גיליון מופיעות כותרות שם פרטי ושם משפחה.');
+  return {students,warnings};
+}
+app.post('/api/admin/students/import/preview',auth,admin,rosterUpload.single('file'),async(req,res)=>{
+  try{
+    if(!req.file||!(/\.xlsx$/i.test(req.file.originalname)))return res.status(400).json({error:'יש לבחור קובץ Excel מסוג xlsx'});
+    const data=parseClassRoster(req.file.buffer);
+    const {rows:existing}=await pool.query('SELECT id,name FROM students WHERE active=true');
+    const existingNames=new Set(existing.map(x=>cleanRosterName(x.name).toLowerCase()));
+    res.json({...data,counts:{total:data.students.length,new:data.students.filter(x=>!existingNames.has(x.name.toLowerCase())).length,existing:data.students.filter(x=>existingNames.has(x.name.toLowerCase())).length}});
+  }catch(e){res.status(400).json({error:e.message||'שגיאה בקריאת הקובץ'})}
+});
+app.post('/api/admin/students/import/commit',auth,admin,async(req,res)=>{
+  const incoming=req.body?.students;
+  if(!Array.isArray(incoming)||!incoming.length||incoming.length>1000)return res.status(400).json({error:'נתוני ייבוא לא תקינים'});
+  const entries=incoming.map(x=>({name:cleanRosterName(x.name),className:cleanRosterName(x.className)}));
+  if(entries.some(x=>!x.name||!x.className||x.name.length>180||x.className.length>80))return res.status(400).json({error:'נמצאו נתונים לא תקינים'});
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    let added=0,reused=0,assigned=0;const classMap=new Map();
+    for(const x of entries){
+      if(!classMap.has(x.className)){
+        const g=await client.query("SELECT id FROM groups WHERE type='class' AND name=$1 AND active=true LIMIT 1",[x.className]);
+        let gid=g.rows[0]?.id;
+        if(!gid){const r=await client.query("INSERT INTO groups(name,type) VALUES($1,'class') RETURNING id",[x.className]);gid=r.rows[0].id}
+        const d=await client.query("SELECT id FROM groups WHERE type='dorm' AND name=$1 AND active=true LIMIT 1",[x.className]);
+        let did=d.rows[0]?.id;
+        if(!did){const r=await client.query("INSERT INTO groups(name,type) VALUES($1,'dorm') RETURNING id",[x.className]);did=r.rows[0].id}
+        classMap.set(x.className,[gid,did]);
+      }
+      const match=await client.query('SELECT id FROM students WHERE active=true AND regexp_replace(trim(name), $2, $3, $4)=regexp_replace($1, $2, $3, $4) ORDER BY id LIMIT 1',[x.name,'\\s+',' ','g']);
+      let sid=match.rows[0]?.id;
+      if(sid){reused++}else{const r=await client.query('INSERT INTO students(name) VALUES($1) RETURNING id',[x.name]);sid=r.rows[0].id;added++}
+      const [gid,did]=classMap.get(x.className);
+      // Preserve other memberships and scores; do not silently remove students from classes.
+      for(const groupId of [gid,did]){const r=await client.query('INSERT INTO group_students(group_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING group_id',[groupId,sid]);assigned+=r.rowCount}
+    }
+    await client.query('COMMIT');res.json({ok:true,added,reused,assigned,classes:[...classMap.keys()]});
+  }catch(e){await client.query('ROLLBACK');console.error('roster import failed',e.message);res.status(500).json({error:'ייבוא התלמידים נכשל. לא בוצעו שינויים.'})}finally{client.release()}
 });
 
 app.post('/api/admin/students',auth,admin,async(req,res)=>{const name=String(req.body.name||'').trim();if(!name)return res.status(400).json({error:'name_required'});const {rows}=await pool.query('INSERT INTO students(name) VALUES($1) RETURNING *',[name]);res.json(rows[0])});
