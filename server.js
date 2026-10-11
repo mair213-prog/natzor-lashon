@@ -600,11 +600,11 @@ app.post('/api/admin/staff/import/commit',auth,admin,rosterUpload.single('file')
  const {entries}=parseStaffWorkbook(req.file.buffer);let added=0,existing=0,skipped=0;
  for(const e of entries){if(e.status!=='ready'||e.role==='admin'){skipped++;continue}
  // Never promote anyone to administrator based on workbook data. Existing accounts are untouched.
- const password=await bcrypt.hash((await import('node:crypto')).randomBytes(32).toString('hex'),12);
+ const password=await bcrypt.hash('12345678',12);
  const result=await pool.query('INSERT INTO users(name,email,whatsapp_phone,password_hash,role) VALUES($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING RETURNING id',[e.name,e.email,e.phone||null,password,e.role]);
  if(result.rowCount)added++;else existing++;
  }
- res.json({added,existing,skipped,message:'חשבונות חדשים נוצרו עם סיסמה אקראית חסומה לשימוש. מנהל חייב להגדיר להם סיסמה באמצעות מסך ניהול הצוות לפני כניסה.'});
+ res.json({added,existing,skipped,message:'למשתמשים החדשים הוגדרה סיסמת ברירת המחדל 12345678. מומלץ להחליף אותה בהתחברות הראשונה.'});
  }catch(e){console.error('Staff import failed',e);res.status(500).json({error:'ייבוא הצוות נכשל; בדוק את יומן השרת'})}
 });
 app.post('/api/admin/students/import/preview',auth,admin,rosterUpload.single('file'),async(req,res)=>{
@@ -675,7 +675,7 @@ app.delete('/api/admin/groups/:gid/students/:sid',auth,admin,async(req,res)=>{
 });
 
 app.post('/api/admin/users',auth,admin,async(req,res)=>{
-  const name=String(req.body.name||'').trim(),email=String(req.body.email||'').trim().toLowerCase(),phone=String(req.body.whatsapp_phone||'').trim(),password=String(req.body.password||''),role=req.body.role;
+  const name=String(req.body.name||'').trim(),email=String(req.body.email||'').trim().toLowerCase(),phone=String(req.body.whatsapp_phone||'').trim(),password=String(req.body.password||'12345678'),role=req.body.role;
   if(!name||!email||password.length<8||!['admin','study','dorm','general'].includes(role))return res.status(400).json({error:'יש למלא שם, אימייל, תפקיד וסיסמה של 8 תווים לפחות'});
   if(role==='admin'){
     if(!MANAGEMENT_PASSWORD)return res.status(500).json({error:'סיסמת ניהול ראשית עדיין לא הוגדרה בשרת'});
