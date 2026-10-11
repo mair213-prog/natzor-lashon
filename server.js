@@ -535,6 +535,12 @@ app.delete('/api/admin/groups/:id',auth,admin,async(req,res)=>{
 // Excel class-roster import: headers are located by label, never by a fixed column index.
 const rosterUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024}});
 function cleanRosterName(v){return String(v??'').replace(/[\u200e\u200f\u202a-\u202e]/g,'').replace(/\s+/g,' ').trim()}
+function canonicalClassName(v){
+  let t=cleanRosterName(v).replace(/^כית(?:ה|ת)\s*/,'').replace(/[\s\u05f3\u05f4'"`.,:;_\-–—־()\[\]]/g,'');
+  // Normalize Hebrew grade names and section numbers; do not merge grade 10 with 11.
+  t=t.replace(/^י([12])$/,'י$1');
+  return t;
+}
 function rosterHeader(v){return cleanRosterName(v).replace(/[\s.:־-]/g,'')}
 function parseClassRoster(buffer){
   const book=XLSX.read(buffer,{type:'buffer',cellDates:false});
@@ -542,7 +548,7 @@ function parseClassRoster(buffer){
   for(const sheetName of book.SheetNames){
     if(/כלל\s*התלמידים|סיכום|הוראות|רשימה\s*כללית/i.test(sheetName))continue;
     const rows=XLSX.utils.sheet_to_json(book.Sheets[sheetName],{header:1,defval:'',blankrows:false});
-    const className=cleanRosterName(sheetName).replace(/^כיתה\s*/,'').replace(/\s+/g,'').replace(/^(י)[\s-]*([12])$/,'$1$2');
+    const className=canonicalClassName(sheetName);
     if(!className){warnings.push(`גיליון ללא שם כיתה: ${sheetName}`);continue}
     let header=null;
     for(let i=0;i<Math.min(rows.length,35);i++){
@@ -625,25 +631,30 @@ app.post('/api/admin/students/import/commit',auth,admin,async(req,res)=>{
   try{
     await client.query('BEGIN');
     let added=0,reused=0,assigned=0;const classMap=new Map();
+    const {rows:allGroups}=await client.query("SELECT id,name,type FROM groups WHERE active=true AND type IN ('class','dorm') FOR UPDATE");
     for(const x of entries){
-      if(!classMap.has(x.className)){
-        const g=await client.query("SELECT id FROM groups WHERE type='class' AND name=$1 AND active=true LIMIT 1",[x.className]);
-        let gid=g.rows[0]?.id;
-        if(!gid){const r=await client.query("INSERT INTO groups(name,type) VALUES($1,'class') RETURNING id",[x.className]);gid=r.rows[0].id}
-        const d=await client.query("SELECT id FROM groups WHERE type='dorm' AND name=$1 AND active=true LIMIT 1",[x.className]);
-        let did=d.rows[0]?.id;
-        if(!did){const r=await client.query("INSERT INTO groups(name,type) VALUES($1,'dorm') RETURNING id",[x.className]);did=r.rows[0].id}
-        classMap.set(x.className,[gid,did]);
+      const key=canonicalClassName(x.className);
+      if(!key)throw new Error('שם כיתה ריק');
+      if(!classMap.has(key)){
+        const ids=[];
+        for(const type of ['class','dorm']){
+          const candidates=allGroups.filter(g=>g.type===type&&canonicalClassName(g.name)===key);
+          if(candidates.length>1)throw new Error('נמצאו מספר קבוצות מתאימות ל-'+x.className+' בתחום '+type+'. יש למזג אותן לפני הייבוא.');
+          let gid=candidates[0]?.id;
+          if(!gid){const r=await client.query('INSERT INTO groups(name,type) VALUES($1,$2) RETURNING id',[x.className,type]);gid=r.rows[0].id;allGroups.push({id:gid,name:x.className,type})}
+          ids.push(gid);
+        }
+        classMap.set(key,ids);
       }
       const match=await client.query('SELECT id FROM students WHERE active=true AND regexp_replace(trim(name), $2, $3, $4)=regexp_replace($1, $2, $3, $4) ORDER BY id LIMIT 1',[x.name,'\\s+',' ','g']);
       let sid=match.rows[0]?.id;
       if(sid){reused++}else{const r=await client.query('INSERT INTO students(name) VALUES($1) RETURNING id',[x.name]);sid=r.rows[0].id;added++}
-      const [gid,did]=classMap.get(x.className);
+      const [gid,did]=classMap.get(key);
       // Preserve other memberships and scores; do not silently remove students from classes.
       for(const groupId of [gid,did]){const r=await client.query('INSERT INTO group_students(group_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING group_id',[groupId,sid]);assigned+=r.rowCount}
     }
     await client.query('COMMIT');res.json({ok:true,added,reused,assigned,classes:[...classMap.keys()]});
-  }catch(e){await client.query('ROLLBACK');console.error('roster import failed',e.message);res.status(500).json({error:'ייבוא התלמידים נכשל. לא בוצעו שינויים.'})}finally{client.release()}
+  }catch(e){await client.query('ROLLBACK');console.error('roster import failed',e.message);res.status(500).json({error:e.message?.startsWith('נמצאו מספר')?e.message:'ייבוא התלמידים נכשל. לא בוצעו שינויים.'})}finally{client.release()}
 });
 
 app.post('/api/admin/students',auth,admin,async(req,res)=>{const name=String(req.body.name||'').trim();if(!name)return res.status(400).json({error:'name_required'});const {rows}=await pool.query('INSERT INTO students(name) VALUES($1) RETURNING *',[name]);res.json(rows[0])});
@@ -718,6 +729,21 @@ app.put('/api/admin/users/:id/reminder',auth,admin,async(req,res)=>{
 
 app.put('/api/admin/users/:id/password',auth,admin,async(req,res)=>{const id=Number(req.params.id),password=String(req.body.password||'');if(password.length<8)return res.status(400).json({error:'הסיסמה חייבת להכיל לפחות 8 תווים'});const hash=await bcrypt.hash(password,12);await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2',[hash,id]);res.json({ok:true})});
 app.delete('/api/admin/users/:id',auth,admin,async(req,res)=>{const id=Number(req.params.id);if(id===req.user.id)return res.status(400).json({error:'לא ניתן למחוק את המשתמש שבו אתה מחובר'});await pool.query('DELETE FROM users WHERE id=$1',[id]);res.json({ok:true})});
+app.post('/api/admin/users/groups/bulk',auth,admin,async(req,res)=>{
+  const userIds=req.body?.userIds,groupIds=req.body?.groupIds,mode=req.body?.mode;
+  if(!Array.isArray(userIds)||!Array.isArray(groupIds)||!userIds.length||!groupIds.length||userIds.length>300||groupIds.length>100||!['grant','revoke'].includes(mode)||[...userIds,...groupIds].some(x=>!Number.isSafeInteger(x)||x<=0))return res.status(400).json({error:'בחירת משתמשים או קבוצות אינה תקינה'});
+  const uids=[...new Set(userIds)],gids=[...new Set(groupIds)];
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const users=await client.query('SELECT id FROM users WHERE id=ANY($1::int[]) AND active=true',[uids]);
+    const groups=await client.query("SELECT id FROM groups WHERE id=ANY($1::int[]) AND active=true AND type IN ('class','dorm')",[gids]);
+    if(users.rowCount!==uids.length||groups.rowCount!==gids.length){await client.query('ROLLBACK');return res.status(400).json({error:'אחד המשתמשים או הקבוצות אינו קיים או אינו פעיל'})}
+    if(mode==='grant')await client.query('INSERT INTO user_groups(user_id,group_id) SELECT u.id,g.id FROM users u CROSS JOIN groups g WHERE u.id=ANY($1::int[]) AND g.id=ANY($2::int[]) ON CONFLICT DO NOTHING',[uids,gids]);
+    else await client.query('DELETE FROM user_groups WHERE user_id=ANY($1::int[]) AND group_id=ANY($2::int[])',[uids,gids]);
+    await client.query('COMMIT');res.json({ok:true,users:uids.length,groups:gids.length});
+  }catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:'עדכון הרשאות קבוצתי נכשל'})}finally{client.release()}
+});
 app.post('/api/admin/users/:uid/groups/:gid',auth,admin,async(req,res)=>{await pool.query('INSERT INTO user_groups(user_id,group_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[Number(req.params.uid),Number(req.params.gid)]);res.json({ok:true})});
 app.delete('/api/admin/users/:uid/groups/:gid',auth,admin,async(req,res)=>{await pool.query('DELETE FROM user_groups WHERE user_id=$1 AND group_id=$2',[Number(req.params.uid),Number(req.params.gid)]);res.json({ok:true})});
 
