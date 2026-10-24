@@ -1,0 +1,36 @@
+{
+  "name": "@kidum-plus/web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test:security": "node ../../tests/security/api-security-smoke.mjs",
+    "test:tenant": "node ../../tests/security/cross-tenant.mjs",
+    "test:route-policy": "node ../../tests/security/route-policy-check.mjs",
+    "test:security:all": "npm run test:route-policy && npm run test:security",
+    "test:compliance": "node ../../tests/compliance/preflight-errors.mjs && node ../../tests/compliance/official-evidence.mjs && node ../../tests/compliance/accessibility-evidence.mjs"
+  },
+  "dependencies": {
+    "next": "^15.5.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "@supabase/supabase-js": "^2.57.4",
+    "docx": "^9.5.1",
+    "pdf-lib": "^1.17.1",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "mammoth": "^1.10.0",
+    "pdf-parse": "^1.1.1",
+    "html2canvas": "^1.4.1",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "@types/qrcode": "^1.5.5"
+  },
+  "version": "0.88.60"
+}
