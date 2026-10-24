@@ -1,21 +1,24 @@
 {
-  "name": "kidum-plus",
+  "name": "natzor-lashon-online",
+  "version": "2.4.0",
   "private": true,
-  "version": "0.88.60",
-  "workspaces": [
-    "apps/*",
-    "packages/*",
-    "services/*"
-  ],
+  "type": "module",
   "scripts": {
-    "dev:web": "npm --workspace apps/web run dev",
-    "dev:mobile": "npm --workspace apps/mobile run start",
-    "typecheck": "tsc -b",
-    "android:open": "echo Open apps/android in Android Studio",
-    "compliance:sbom": "node scripts/compliance/generate-sbom.mjs",
-    "compliance:sca:normalize": "node scripts/compliance/normalize-npm-audit.mjs",
-    "compliance:ci-integrity": "node scripts/compliance/check-ci-integrity.mjs",
-    "compliance:provenance": "node scripts/compliance/generate-release-provenance.mjs",
-    "compliance:environment": "node scripts/compliance/generate-environment-evidence.mjs"
+    "start": "node server.js",
+    "init-db": "node init-db.js",
+    "send-reminders": "node send-reminders.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "nodemailer": "^6.9.16",
+    "web-push": "^3.6.7",
+    "firebase-admin": "^13.4.0",
+    "xlsx": "^0.18.5",
+    "multer": "^1.4.5-lts.2"
   }
 }
